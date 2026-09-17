@@ -1,0 +1,176 @@
+# Copyright (c) 2023 - 2026 Chair for Design Automation, TUM
+# Copyright (c) 2025 - 2026 Munich Quantum Software Company GmbH
+# All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Licensed under the MIT License
+
+"""Tests for VectorDDs in the MQT Core DD package."""
+
+from __future__ import annotations
+
+import gc
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pytest
+
+from mqt.core.dd import DDPackage, MatrixDD
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
+
+
+def test_matrix_array_ownership() -> None:
+    """Test matrix array ownership and the zero-qubit export."""
+    package = DDPackage(1)
+    zero_qubit_matrix = package.identity().get_matrix(0)
+    assert zero_qubit_matrix.dtype == np.complex128
+    assert zero_qubit_matrix.shape == (1, 1)
+    assert zero_qubit_matrix.flags.c_contiguous
+    assert zero_qubit_matrix.flags.writeable  # spellchecker:disable-line
+    assert zero_qubit_matrix[0, 0] == 1
+
+    expected = np.array([[0, 1], [1, 0]], dtype=np.complex128)
+    matrix_dd = package.single_qubit_gate(expected, 0)
+    matrix = matrix_dd.get_matrix(1)
+    assert matrix.dtype == np.complex128
+    assert matrix.shape == (2, 2)
+    assert matrix.flags.c_contiguous
+    assert matrix.flags.writeable  # spellchecker:disable-line
+
+    matrix[0, 0] = 2 + 3j
+    assert np.allclose(matrix_dd.get_matrix(1), expected)
+
+    view = matrix[:, :1]
+    del matrix, matrix_dd, package, zero_qubit_matrix
+    gc.collect()
+
+    assert np.allclose(view, [[2 + 3j], [1]])
+    view[0, 0] = -1j
+    assert np.allclose(view[0, 0], -1j)
+
+
+def test_identity() -> None:
+    """Test the identity matrix."""
+    p = DDPackage(3)
+    for i in range(p.max_qubits + 1):
+        dd = p.identity()
+        assert dd.size() == 1
+        mat = dd.get_matrix(i)
+        arr = np.array(mat, copy=False)
+        assert arr.shape == (2**i, 2**i)
+        assert np.allclose(arr, np.eye(2**i))
+
+
+@pytest.fixture
+def gate_matrices() -> dict[str, npt.NDArray[np.complex128]]:
+    """Returns a dictionary of single-qubit gate matrices."""
+    return {
+        "X": np.array([[0, 1], [1, 0]], dtype=np.complex128),
+        "Y": np.array([[0, -1j], [1j, 0]], dtype=np.complex128),
+        "Z": np.array([[1, 0], [0, -1]], dtype=np.complex128),
+        "H": np.array([[1, 1], [1, -1]], dtype=np.complex128) / np.sqrt(2),
+        "S": np.array([[1, 0], [0, 1j]], dtype=np.complex128),
+        "T": np.array([[1, 0], [0, np.exp(1j * np.pi / 4)]], dtype=np.complex128),
+    }
+
+
+def test_single_qubit_gate(gate_matrices: dict[str, npt.NDArray[np.complex128]]) -> None:
+    """Test constructing single-qubit gate DDs."""
+    p = DDPackage(3)
+    for i in range(p.max_qubits + 1):
+        for gate_mat in gate_matrices.values():
+            for j in range(i):
+                dd = p.single_qubit_gate(gate_mat, j)
+                assert dd.size() == 2
+                mat = dd.get_matrix(i)
+                arr = np.array(mat, copy=False)
+                assert arr.shape == (2**i, 2**i)
+                target = gate_mat
+                if j > 0:
+                    target = np.kron(target, np.eye(2**j)).astype(np.complex128)
+                if j < i - 1:
+                    target = np.kron(np.eye(2 ** (i - j - 1)), target).astype(np.complex128)
+                assert np.allclose(arr, target)
+
+
+def test_controlled_single_qubit_gate(gate_matrices: dict[str, npt.NDArray[np.complex128]]) -> None:
+    """Test constructing controlled single-qubit gate DDs."""
+    p = DDPackage(5)
+    for i in range(p.max_qubits + 1):
+        for c in range(i):
+            for t in range(c):
+                for gate_mat in gate_matrices.values():
+                    dd = p.controlled_single_qubit_gate(gate_mat, c, t)
+                    assert dd.size() == 3
+                    mat = dd.get_matrix(i)
+                    arr = np.array(mat, copy=False)
+                    assert arr.shape == (2**i, 2**i)
+                    target = gate_mat
+                    if t > 0:
+                        target = np.kron(target, np.eye(2**t)).astype(np.complex128)
+                    if c - t > 1:
+                        target = np.kron(np.eye(2 ** (c - t - 1)), target).astype(np.complex128)
+                    target = np.kron(np.array([[0, 0], [0, 1]]), target)
+                    target += np.kron(np.array([[1, 0], [0, 0]]), np.eye(2**c))
+                    if c < i - 1:
+                        target = np.kron(np.eye(2 ** (i - c - 1)), target).astype(np.complex128)
+                    assert np.allclose(arr, target)
+
+
+def test_two_qubit_gate() -> None:
+    """Test constructing two-qubit gate DDs."""
+    p = DDPackage(5)
+    gate_mat = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.complex128)
+    for i in range(p.max_qubits + 1):
+        for t0 in range(i):
+            for t1 in range(t0):
+                dd = p.two_qubit_gate(gate_mat, t0, t1)
+                assert dd.size() == 6
+                mat = dd.get_matrix(i)
+                arr = np.array(mat, copy=False)
+                assert arr.shape == (2**i, 2**i)
+
+
+def test_controlled_two_qubit_gate() -> None:
+    """Test constructing controlled two-qubit gate DDs."""
+    p = DDPackage(5)
+    gate_mat = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.complex128)
+    for i in range(p.max_qubits + 1):
+        for c in range(i):
+            for t0 in range(c):
+                for t1 in range(t0):
+                    dd = p.controlled_two_qubit_gate(gate_mat, c, t0, t1)
+                    assert dd.size() == 7
+                    mat = dd.get_matrix(i)
+                    arr = np.array(mat, copy=False)
+                    assert arr.shape == (2**i, 2**i)
+
+
+def test_from_matrix() -> None:
+    """Test constructing a DD from a random unitary matrix."""
+    p = DDPackage(3)
+    rng = np.random.default_rng(1337)
+    for i in range(p.max_qubits + 1):
+        for _ in range(10):
+            mat = rng.random((2**i, 2**i)) + 1j * rng.random((2**i, 2**i))
+            mat = np.linalg.qr(mat)[0]
+            dd = p.from_matrix(mat)
+            mat2 = dd.get_matrix(i)
+            assert np.allclose(mat, mat2)
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_serialization(*, binary: bool) -> None:
+    """Test serializing and deserializing matrix DDs."""
+    p = DDPackage(3)
+    hadamard = np.array([[1, 1], [1, -1]], dtype=np.complex128) / np.sqrt(2)
+    matrix_dds = ((p.identity(), 0), (p.single_qubit_gate(hadamard, 2), 3))
+    for dd, num_qubits in matrix_dds:
+        data = dd.to_bytes(binary=binary)
+        assert isinstance(data, bytes)
+
+        restored = MatrixDD.from_bytes(DDPackage(3), data, binary=binary)
+        assert np.allclose(restored.get_matrix(num_qubits), dd.get_matrix(num_qubits))

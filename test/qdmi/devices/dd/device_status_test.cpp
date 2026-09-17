@@ -1,0 +1,66 @@
+/*
+ * Copyright (c) 2023 - 2026 Chair for Design Automation, TUM
+ * Copyright (c) 2025 - 2026 Munich Quantum Software Company GmbH
+ * All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Licensed under the MIT License
+ */
+
+/* DDSIM QDMI device status transitions. */
+#include "helpers/circuits.hpp"
+#include "helpers/test_utils.hpp"
+#include "mqt_ddsim_qdmi/constants.h"
+#include "mqt_ddsim_qdmi/device.h"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <thread>
+
+namespace {
+QDMI_Device_Status queryStatus(MQT_DDSIM_QDMI_Device_Session session) {
+  QDMI_Device_Status st = QDMI_DEVICE_STATUS_OFFLINE;
+  const auto rc = MQT_DDSIM_QDMI_device_session_query_device_property(
+      session, QDMI_DEVICE_PROPERTY_STATUS, sizeof(QDMI_Device_Status), &st,
+      nullptr);
+  EXPECT_EQ(rc, QDMI_SUCCESS);
+  return st;
+}
+} // namespace
+
+TEST(DeviceStatus, TransitionsBusyThenIdleAfterJob) {
+  const qdmi_test::SessionGuard s{};
+
+  EXPECT_EQ(queryStatus(s.session), QDMI_DEVICE_STATUS_IDLE);
+
+  // Submit a job to force BUSY, then wait for the return to IDLE.
+  const qdmi_test::JobGuard j{s.session};
+  ASSERT_EQ(qdmi_test::setProgram(j.job, QDMI_PROGRAM_FORMAT_QASM3,
+                                  qdmi_test::QASM3_HEAVY_SAMPLING),
+            QDMI_SUCCESS);
+  ASSERT_EQ(qdmi_test::setShots(j.job, 16384), QDMI_SUCCESS);
+  ASSERT_EQ(MQT_DDSIM_QDMI_device_job_submit(j.job), QDMI_SUCCESS);
+
+  // Poll while running to observe BUSY at least once.
+  std::atomic<bool> sawBusy{false};
+  std::atomic<bool> done{false};
+  std::thread poller([&]() {
+    while (!done.load(std::memory_order_acquire)) {
+      if (const auto st = queryStatus(s.session);
+          st == QDMI_DEVICE_STATUS_BUSY) {
+        sawBusy.store(true, std::memory_order_release);
+      }
+    }
+  });
+
+  ASSERT_EQ(MQT_DDSIM_QDMI_device_job_wait(j.job, 0), QDMI_SUCCESS);
+  done.store(true, std::memory_order_release);
+  poller.join();
+
+  EXPECT_TRUE(sawBusy.load(std::memory_order_acquire));
+
+  // After completion, the status should be IDLE.
+  EXPECT_EQ(queryStatus(s.session), QDMI_DEVICE_STATUS_IDLE);
+}

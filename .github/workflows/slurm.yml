@@ -1,0 +1,61 @@
+name: Slurm integration
+
+on:
+  push:
+    branches:
+      - v3.x
+    paths:
+      - ".github/workflows/slurm.yml"
+      - "bindings/qdmi/**"
+      - "cmake/**"
+      - "include/mqt-core/qdmi/**"
+      - "pyproject.toml"
+      - "python/mqt/core/qdmi/**"
+      - "src/qdmi/**"
+      - "test/slurm/**"
+      - "uv.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/slurm.yml"
+      - "bindings/qdmi/**"
+      - "cmake/**"
+      - "include/mqt-core/qdmi/**"
+      - "pyproject.toml"
+      - "python/mqt/core/qdmi/**"
+      - "src/qdmi/**"
+      - "test/slurm/**"
+      - "uv.lock"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  slurm:
+    name: Slurm 25.11 and QDMI devices
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    env:
+      UV_NO_PROGRESS: "1"
+    steps:
+      - name: Check out MQT Core
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Build the MQT Core wheel
+        run: uv build --wheel --out-dir test/slurm/dist
+
+      - name: Test Slurm admission and QDMI execution
+        run: uv run --no-project --python 3.14 test/slurm/run_integration.py
