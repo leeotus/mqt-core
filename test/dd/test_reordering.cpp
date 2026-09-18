@@ -195,3 +195,72 @@ TEST(Reordering, SiftNeverIncreasesTheSize) {
   EXPECT_EQ(statistics.initialSize, initialSize);
   EXPECT_EQ(statistics.finalSize, root.size());
 }
+
+TEST(Reordering, DynamicConstructionTriggersReorderings) {
+  const auto circuit = makeAsymmetricCircuit();
+  const auto numQubits = circuit.getNqubits();
+  auto package = std::make_unique<Package>(numQubits);
+
+  ConstructionOptions options;
+  options.dynamic.enabled = true;
+  options.dynamic.initialThreshold = 4U;
+  ConstructionStatistics statistics;
+  const auto root = buildFunctionality(circuit, *package, options, &statistics);
+
+  EXPECT_GT(statistics.reorderings, 0U);
+  EXPECT_GT(statistics.exchanges, 0U);
+  EXPECT_EQ(statistics.finalSize, root.size());
+  EXPECT_EQ(statistics.finalLayout.size(), numQubits);
+}
+
+TEST(Reordering, DynamicConstructionPreservesTheUnitary) {
+  const auto circuit = makeAsymmetricCircuit();
+  const auto numQubits = circuit.getNqubits();
+
+  auto referencePackage = std::make_unique<Package>(numQubits);
+  const auto referenceMatrix =
+      buildFunctionality(circuit, *referencePackage).getMatrix(numQubits);
+
+  auto package = std::make_unique<Package>(numQubits);
+  ConstructionOptions options;
+  options.dynamic.enabled = true;
+  options.dynamic.initialThreshold = 4U;
+  ConstructionStatistics statistics;
+  const auto root = buildFunctionality(circuit, *package, options, &statistics);
+  const auto matrix = root.getMatrix(numQubits);
+
+  for (std::size_t i = 0U; i < referenceMatrix.size(); ++i) {
+    for (std::size_t j = 0U; j < referenceMatrix.size(); ++j) {
+      const auto row = levelIndex(i, statistics.finalLayout, numQubits);
+      const auto col = levelIndex(j, statistics.finalLayout, numQubits);
+      EXPECT_NEAR(std::abs(matrix[row][col] - referenceMatrix[i][j]), 0.0,
+                  1e-9);
+    }
+  }
+}
+
+TEST(Reordering, DynamicConstructionPreservesTheStateVector) {
+  const auto circuit = makeAsymmetricCircuit();
+  const auto numQubits = circuit.getNqubits();
+
+  auto referencePackage = std::make_unique<Package>(numQubits);
+  const auto referenceVector =
+      simulate(circuit, makeZeroState(numQubits, *referencePackage),
+               *referencePackage)
+          .getVector();
+
+  auto package = std::make_unique<Package>(numQubits);
+  ConstructionOptions options;
+  options.dynamic.enabled = true;
+  options.dynamic.initialThreshold = 4U;
+  ConstructionStatistics statistics;
+  const auto root = simulate(circuit, makeZeroState(numQubits, *package),
+                             *package, options, &statistics);
+  const auto vector = root.getVector();
+
+  ASSERT_EQ(vector.size(), referenceVector.size());
+  for (std::size_t i = 0U; i < referenceVector.size(); ++i) {
+    const auto index = levelIndex(i, statistics.finalLayout, numQubits);
+    EXPECT_NEAR(std::abs(vector[index] - referenceVector[i]), 0.0, 1e-9);
+  }
+}

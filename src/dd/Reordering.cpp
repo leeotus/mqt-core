@@ -16,6 +16,8 @@
 #include "dd/Package.hpp"
 #include "ir/Permutation.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -194,6 +196,63 @@ siftImpl(Package& dd, Edge<Node> root, qc::Permutation& layout,
 }
 
 } // namespace
+
+DynamicReorderer::DynamicReorderer(DynamicReorderingOptions options)
+    : options_(std::move(options)), threshold_(options_.initialThreshold) {}
+
+bool DynamicReorderer::operator()(Package& dd, mEdge& root,
+                                  qc::Permutation& layout,
+                                  ConstructionStatistics* statistics) {
+  return inspect(dd, root, layout, statistics);
+}
+
+bool DynamicReorderer::operator()(Package& dd, vEdge& root,
+                                  qc::Permutation& layout,
+                                  ConstructionStatistics* statistics) {
+  return inspect(dd, root, layout, statistics);
+}
+
+template <class Node>
+bool DynamicReorderer::inspect(Package& dd, Edge<Node>& root,
+                               qc::Permutation& layout,
+                               ConstructionStatistics* statistics) {
+  const auto size = root.size();
+  if (statistics != nullptr) {
+    statistics->peakSize = std::max(statistics->peakSize, size);
+  }
+  if (!options_.enabled || size <= threshold_) {
+    return false;
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  SiftingStatistics sifting;
+  auto reordered = sift(dd, root, layout, options_.sifting, &sifting);
+
+  // sift leaves exactly one reference on the result. Transfer the reference
+  // that the caller holds on the old root to the reordered diagram.
+  const auto& roots = dd.getRootSet<Node>();
+  if (roots.find(root) != roots.end()) {
+    dd.decRef(root);
+  }
+  root = reordered;
+  const auto stop = std::chrono::steady_clock::now();
+
+  if (statistics != nullptr) {
+    ++statistics->reorderings;
+    statistics->exchanges += sifting.exchanges;
+    statistics->reorderTimeMs +=
+        std::chrono::duration<double, std::milli>(stop - start).count();
+  }
+
+  // Raise the threshold so that the next reordering does not happen
+  // immediately: grow it by the growth factor, and keep it above the tracking
+  // factor of the current size.
+  const auto grown = static_cast<double>(threshold_) * options_.growthFactor;
+  const auto tracked =
+      options_.trackingFactor * static_cast<double>(root.size());
+  threshold_ = static_cast<std::size_t>(std::max(grown, tracked));
+  return true;
+}
 
 mEdge exchangeMatrixLevels(Package& dd, const mEdge& root,
                            const std::size_t level) {

@@ -56,6 +56,97 @@ struct SiftingStatistics {
 };
 
 /**
+ * @brief Options for threshold-triggered reordering during construction
+ * @details The policy follows the idea of the igqmdd tool: after every
+ * operation, compare the size of the current decision diagram with a
+ * threshold. When the size exceeds the threshold, reorder the diagram with
+ * sifting and raise the threshold so that the next reordering does not happen
+ * immediately. The idea is to keep intermediate decision diagrams small so
+ * that the final diagram is small as well.
+ */
+struct DynamicReorderingOptions {
+  /// Whether to reorder during construction at all
+  bool enabled = false;
+  /// The size that triggers the first reordering
+  std::size_t initialThreshold = 1000U;
+  /// The factor by which the threshold grows after a reordering
+  double growthFactor = 2.0;
+  /// The factor of the current size that the threshold is raised to
+  double trackingFactor = 1.5;
+  /// The options that are passed to sifting
+  SiftingOptions sifting{};
+};
+
+/**
+ * @brief Options for building a decision diagram incrementally
+ */
+struct ConstructionOptions {
+  /// Threshold-triggered reordering during construction
+  DynamicReorderingOptions dynamic{};
+};
+
+/**
+ * @brief Measurements of a construction run
+ */
+struct ConstructionStatistics {
+  /// The number of times that the threshold triggered a reordering
+  std::size_t reorderings = 0U;
+  /// The total number of adjacent level exchanges
+  std::size_t exchanges = 0U;
+  /// The largest decision diagram that was observed
+  std::size_t peakSize = 0U;
+  /// The size of the final decision diagram
+  std::size_t finalSize = 0U;
+  /// The total time spent in reordering
+  double reorderTimeMs = 0.0;
+  /// The level order of the returned decision diagram
+  /// @note The construction functions fill this field only when dynamic
+  /// reordering is enabled, because then the level order is not known before
+  /// the construction.
+  qc::Permutation finalLayout;
+};
+
+/**
+ * @brief Threshold-triggered reordering policy
+ * @details Keep one instance per construction. The call operator inspects the
+ * current decision diagram after an operation and reorders it when its size
+ * exceeds the threshold. It owns the reference that the caller holds on the
+ * diagram, so the caller keeps its invariant of holding exactly one reference.
+ * The class is independent of the construction loop, which makes it reusable
+ * for any incremental construction, for example @ref buildFunctionality or
+ * @ref simulate.
+ */
+class DynamicReorderer final {
+public:
+  explicit DynamicReorderer(DynamicReorderingOptions options = {});
+
+  /**
+   * @brief Inspect a matrix decision diagram and reorder it when needed
+   * @return Whether a reordering was applied
+   */
+  bool operator()(Package& dd, mEdge& root, qc::Permutation& layout,
+                  ConstructionStatistics* statistics = nullptr);
+
+  /**
+   * @brief Inspect a vector decision diagram and reorder it when needed
+   * @return Whether a reordering was applied
+   */
+  bool operator()(Package& dd, vEdge& root, qc::Permutation& layout,
+                  ConstructionStatistics* statistics = nullptr);
+
+  /// The threshold that is currently in use
+  [[nodiscard]] std::size_t threshold() const noexcept { return threshold_; }
+
+private:
+  template <class Node>
+  bool inspect(Package& dd, Edge<Node>& root, qc::Permutation& layout,
+               ConstructionStatistics* statistics);
+
+  DynamicReorderingOptions options_;
+  std::size_t threshold_ = 0U;
+};
+
+/**
  * @brief Swap two adjacent levels of a matrix decision diagram
  * @details The function returns a diagram that represents the same operator
  * with the variables of @p level and `level - 1` exchanged. It builds new

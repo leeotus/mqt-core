@@ -227,17 +227,36 @@ sample(const qc::QuantumComputation& qc, const VectorDD& in, Package& dd,
 
 VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
                   Package& dd) {
+  return simulate(qc, in, dd, ConstructionOptions{}, nullptr);
+}
+
+VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
+                  Package& dd, const ConstructionOptions& options,
+                  ConstructionStatistics* statistics) {
   auto permutation = qc.initialLayout;
   auto out = in;
+  DynamicReorderer reorderer(options.dynamic);
   for (const auto& op : qc) {
     if (isExecutableVirtually(*op)) {
       applyVirtualOperation(*op, permutation);
     } else {
       out = applyUnitaryOperation(*op, out, dd, permutation);
+      if (options.dynamic.enabled) {
+        reorderer(dd, out, permutation, statistics);
+      }
     }
   }
 
-  changePermutation(out, permutation, qc.outputPermutation, dd);
+  if (options.dynamic.enabled) {
+    // See buildFunctionality: the level order is only known after the
+    // simulation, so report it instead of mapping the state to the output
+    // order.
+    if (statistics != nullptr) {
+      statistics->finalLayout = permutation;
+    }
+  } else {
+    changePermutation(out, permutation, qc.outputPermutation, dd);
+  }
   out = dd.reduceGarbage(out, qc.getGarbage());
 
   // properly account for the global phase of the circuit
@@ -245,6 +264,9 @@ VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
     out = applyGlobalPhase(out, qc.getGlobalPhase(), dd);
   }
 
+  if (statistics != nullptr) {
+    statistics->finalSize = out.size();
+  }
   return out;
 }
 

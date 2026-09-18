@@ -11,6 +11,7 @@
 #pragma once
 
 #include "dd/Package_fwd.hpp"
+#include "dd/Reordering.hpp"
 
 namespace qc {
 class QuantumComputation;
@@ -51,5 +52,24 @@ namespace dd {
  * computation
  */
 MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd);
+
+/**
+ * @brief Sequentially build the functionality with optional dynamic reordering
+ * @details This overload additionally supports threshold-triggered reordering
+ * during construction. After every operation the size of the current decision
+ * diagram is compared with a threshold. When the size exceeds the threshold,
+ * the diagram is reordered with sifting and the threshold is raised. The idea
+ * is to keep the intermediate decision diagrams small so that the final
+ * diagram stays small.
+ * @param qc The quantum computation to construct the functionality for
+ * @param dd The DD package to use for the construction
+ * @param options The construction options
+ * @param statistics Optional measurements of the construction
+ * @return The matrix diagram representing the functionality of the quantum
+ * computation
+ */
+MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd,
+                            const ConstructionOptions& options,
+                            ConstructionStatistics* statistics = nullptr);
 
 } // namespace dd

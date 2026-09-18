@@ -18,7 +18,9 @@
 #include <utility>
 
 namespace dd {
-MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd) {
+MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd,
+                            const ConstructionOptions& options,
+                            ConstructionStatistics* statistics) {
   if (qc.getNqubits() == 0U) {
     return MatrixDD::one();
   }
@@ -26,6 +28,7 @@ MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd) {
   auto permutation = qc.initialLayout;
   auto e = dd.createInitialMatrix(qc.getAncillary());
 
+  DynamicReorderer reorderer(options.dynamic);
   for (const auto& op : qc) {
     // SWAP gates can be executed virtually by changing the permutation
     if (op->getType() == qc::OpType::SWAP && !op->isControlled()) {
@@ -35,13 +38,34 @@ MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd) {
     }
 
     e = applyUnitaryOperation(*op, e, dd, permutation);
+    if (options.dynamic.enabled) {
+      reorderer(dd, e, permutation, statistics);
+    }
   }
-  // correct permutation if necessary
-  changePermutation(e, permutation, qc.outputPermutation, dd);
+
+  if (options.dynamic.enabled) {
+    // Dynamic reordering changes the level order while the diagram is built,
+    // so the order that the diagram is in is only known now. Report it instead
+    // of mapping the diagram to the output order, which would undo the
+    // reordering and enlarge the diagram again.
+    if (statistics != nullptr) {
+      statistics->finalLayout = permutation;
+    }
+  } else {
+    // correct permutation if necessary
+    changePermutation(e, permutation, qc.outputPermutation, dd);
+  }
   e = dd.reduceAncillae(e, qc.getAncillary());
   e = dd.reduceGarbage(e, qc.getGarbage());
 
+  if (statistics != nullptr) {
+    statistics->finalSize = e.size();
+  }
   return e;
+}
+
+MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd) {
+  return buildFunctionality(qc, dd, ConstructionOptions{}, nullptr);
 }
 
 } // namespace dd

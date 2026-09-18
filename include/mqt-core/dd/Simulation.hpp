@@ -15,6 +15,7 @@
 #pragma once
 
 #include "dd/Package_fwd.hpp"
+#include "dd/Reordering.hpp"
 
 #include <cstddef>
 #include <map>
@@ -50,6 +51,24 @@ namespace dd {
  */
 VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
                   Package& dd);
+
+/**
+ * @brief Simulate a circuit with optional dynamic reordering
+ * @details This overload additionally supports threshold-triggered reordering
+ * during simulation. After every operation the size of the current state
+ * decision diagram is compared with a threshold. When the size exceeds the
+ * threshold, the diagram is reordered with sifting and the threshold is
+ * raised.
+ * @param qc The quantum computation to simulate
+ * @param in The input state to simulate
+ * @param dd The DD package to use for the simulation
+ * @param options The construction options
+ * @param statistics Optional measurements of the simulation
+ * @return A vector DD representing the output state of the simulation
+ */
+VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
+                  Package& dd, const ConstructionOptions& options,
+                  ConstructionStatistics* statistics = nullptr);
 
 /**
  * @brief Sample from the output distribution of a quantum computation
