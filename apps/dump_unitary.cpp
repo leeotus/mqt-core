@@ -28,8 +28,8 @@
 #include "ir/QuantumComputation.hpp"
 #include "qasm3/Importer.hpp"
 
-#include <cstddef>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <exception>
 #include <fstream>
@@ -44,9 +44,8 @@ int main(int argc, char** argv) {
   }
 
   const std::vector<dd::OrderingStrategy> strategies{
-      dd::OrderingStrategy::Identity,     dd::OrderingStrategy::Degree,
-      dd::OrderingStrategy::Spectral,     dd::OrderingStrategy::RecursiveBisection,
-      dd::OrderingStrategy::MinFill,      dd::OrderingStrategy::GateDependency};
+      dd::OrderingStrategy::Identity, dd::OrderingStrategy::Degree,
+      dd::OrderingStrategy::Spectral, dd::OrderingStrategy::RecursiveBisection};
 
   for (int index = 1; index < argc; ++index) {
     const std::string path = argv[index];

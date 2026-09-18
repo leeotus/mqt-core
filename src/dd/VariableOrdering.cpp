@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <limits>
 #include <numeric>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -327,153 +326,6 @@ void bisect(const InteractionGraph& graph,
 }
 
 /**
- * @brief Compute a greedy minimum-fill elimination order
- * @details The function repeatedly eliminates the qubit whose elimination adds
- * the fewest edges between its remaining neighbors. Minimum-fill elimination
- * approximates the treewidth of the interaction graph, which bounds the number
- * of decision diagram nodes.
- */
-[[nodiscard]] std::vector<std::size_t>
-minFillEliminationOrder(const InteractionGraph& graph) {
-  const auto n = graph.numQubits;
-  std::vector<std::set<std::size_t>> adjacency(n);
-  for (std::size_t a = 0U; a < n; ++a) {
-    for (std::size_t b = a + 1U; b < n; ++b) {
-      if (graph.weight[a][b] > 0U) {
-        adjacency[a].insert(b);
-        adjacency[b].insert(a);
-      }
-    }
-  }
-
-  std::vector<bool> eliminated(n, false);
-  std::vector<std::size_t> order;
-  order.reserve(n);
-
-  for (std::size_t step = 0U; step < n; ++step) {
-    std::size_t best = n;
-    std::size_t bestFill = std::numeric_limits<std::size_t>::max();
-    std::size_t bestDegree = std::numeric_limits<std::size_t>::max();
-    for (std::size_t candidate = 0U; candidate < n; ++candidate) {
-      if (eliminated[candidate]) {
-        continue;
-      }
-      std::size_t fill = 0U;
-      const auto& neighbors = adjacency[candidate];
-      for (auto it = neighbors.begin(); it != neighbors.end(); ++it) {
-        auto jt = it;
-        for (++jt; jt != neighbors.end(); ++jt) {
-          if (adjacency[*it].find(*jt) == adjacency[*it].end()) {
-            ++fill;
-          }
-        }
-      }
-      const auto degree = neighbors.size();
-      if (fill < bestFill || (fill == bestFill && degree < bestDegree)) {
-        best = candidate;
-        bestFill = fill;
-        bestDegree = degree;
-      }
-    }
-
-    const std::vector<std::size_t> neighbors(adjacency[best].begin(),
-                                             adjacency[best].end());
-    for (std::size_t i = 0U; i < neighbors.size(); ++i) {
-      for (std::size_t j = i + 1U; j < neighbors.size(); ++j) {
-        adjacency[neighbors[i]].insert(neighbors[j]);
-        adjacency[neighbors[j]].insert(neighbors[i]);
-      }
-    }
-    for (const auto neighbor : neighbors) {
-      adjacency[neighbor].erase(best);
-    }
-    adjacency[best].clear();
-    eliminated[best] = true;
-    order.emplace_back(best);
-  }
-  return order;
-}
-
-/**
- * @brief Compute the control-dependency order used by MQT DDSIM
- * @details The function mirrors `DDMinimizer::createGateBasedPermutation` from
- * MQT DDSIM. A qubit that no other qubit controls is ready first, so targets
- * receive lower levels than the controls that act on them.
- */
-[[nodiscard]] std::vector<std::size_t>
-gateDependencyOrder(const qc::QuantumComputation& circuit) {
-  const auto n = circuit.getNqubits();
-  std::vector<std::size_t> identity(n);
-  std::iota(identity.begin(), identity.end(), 0U);
-  if (n < 2U) {
-    return identity;
-  }
-
-  std::vector<std::set<std::size_t>> targetToControls(n);
-  std::vector<std::size_t> openControls(n, 0U);
-
-  const auto collect = [&targetToControls, &openControls](
-                           const auto& self, const qc::Operation& op) -> void {
-    if (op.isCompoundOperation()) {
-      const auto* compound =
-          dynamic_cast<const qc::CompoundOperation*>(&op); // NOLINT
-      if (compound != nullptr) {
-        for (const auto& child : *compound) {
-          self(self, *child);
-        }
-      }
-      return;
-    }
-    if (!op.isStandardOperation() || op.getType() == qc::Z) {
-      return;
-    }
-    for (const auto& control : op.getControls()) {
-      for (const auto target : op.getTargets()) {
-        if (control.qubit == target) {
-          continue;
-        }
-        if (targetToControls[target].insert(control.qubit).second) {
-          ++openControls[control.qubit];
-        }
-      }
-    }
-  };
-
-  for (const auto& op : circuit) {
-    if (op) {
-      collect(collect, *op);
-    }
-  }
-
-  std::set<std::size_t> ready;
-  for (std::size_t qubit = 0U; qubit < n; ++qubit) {
-    if (openControls[qubit] == 0U) {
-      ready.insert(qubit);
-    }
-  }
-  if (ready.size() == n) {
-    return identity;
-  }
-
-  std::vector<std::size_t> position(n, 0U);
-  std::size_t next = 0U;
-  while (!ready.empty()) {
-    const auto current = *ready.begin();
-    ready.erase(ready.begin());
-    position[current] = next++;
-    for (const auto control : targetToControls[current]) {
-      if (--openControls[control] == 0U) {
-        ready.insert(control);
-      }
-    }
-  }
-  if (next != n) {
-    return identity;
-  }
-  return position;
-}
-
-/**
  * @brief Append qubits that no strategy placed, in physical order
  */
 void completeOrder(std::vector<std::size_t>& order, const std::size_t n) {
@@ -550,15 +402,6 @@ qc::Permutation computeVariableOrder(const qc::QuantumComputation& circuit,
     bisect(graph, vertices, order);
     break;
   }
-  case OrderingStrategy::MinFill: {
-    order = minFillEliminationOrder(graph);
-    std::ranges::reverse(order);
-    break;
-  }
-  case OrderingStrategy::GateDependency: {
-    order = gateDependencyOrder(circuit);
-    break;
-  }
   }
 
   completeOrder(order, numQubits);
@@ -581,10 +424,6 @@ const char* toString(const OrderingStrategy strategy) {
     return "spectral";
   case OrderingStrategy::RecursiveBisection:
     return "recursive-bisection";
-  case OrderingStrategy::MinFill:
-    return "min-fill";
-  case OrderingStrategy::GateDependency:
-    return "gate-dependency";
   }
   return "unknown";
 }

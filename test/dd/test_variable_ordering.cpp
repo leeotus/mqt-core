@@ -33,10 +33,9 @@ using namespace dd;
 
 namespace {
 
-constexpr std::array<OrderingStrategy, 5> NON_DEFAULT_STRATEGIES{
+constexpr std::array<OrderingStrategy, 3> NON_DEFAULT_STRATEGIES{
     OrderingStrategy::Degree, OrderingStrategy::Spectral,
-    OrderingStrategy::RecursiveBisection, OrderingStrategy::MinFill,
-    OrderingStrategy::GateDependency};
+    OrderingStrategy::RecursiveBisection};
 
 /**
  * @brief A four-qubit circuit whose interaction graph has four different
@@ -179,12 +178,12 @@ TEST(VariableOrdering, StrategiesDifferOnAsymmetricCircuit) {
   qc.cx(0, 4);
 
   const auto degree = computeVariableOrder(qc, OrderingStrategy::Degree);
-  const auto minFill = computeVariableOrder(qc, OrderingStrategy::MinFill);
+  const auto spectral = computeVariableOrder(qc, OrderingStrategy::Spectral);
 
   // The qubit that every gate touches belongs at the root under the degree
   // strategy.
   EXPECT_EQ(degree.at(0), 4U);
-  EXPECT_NE(degree.at(0), minFill.at(0));
+  EXPECT_NE(degree.at(0), spectral.at(0));
 }
 
 TEST(VariableOrdering, ReorderingPreservesTheStateVector) {

@@ -32,8 +32,8 @@
 #include "ir/QuantumComputation.hpp"
 #include "ir/operations/Control.hpp"
 
-#include <chrono>
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
@@ -151,9 +151,8 @@ expand(const std::vector<std::string>& statement,
   const auto& name = statement.front();
   const bool isPrimitive =
       name == "t" || (name.size() > 1U && name.front() == 't' &&
-                      std::all_of(name.begin() + 1, name.end(), [](char c) {
-                        return c >= '0' && c <= '9';
-                      }));
+                      std::all_of(name.begin() + 1, name.end(),
+                                  [](char c) { return c >= '0' && c <= '9'; }));
   if (isPrimitive) {
     std::vector<std::string> operands;
     for (std::size_t i = 1U; i < statement.size(); ++i) {
@@ -340,9 +339,7 @@ int main(int argc, char** argv) {
   const std::vector<std::pair<std::string, dd::OrderingStrategy>> strategies{
       {"degree", dd::OrderingStrategy::Degree},
       {"spectral", dd::OrderingStrategy::Spectral},
-      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection},
-      {"min-fill", dd::OrderingStrategy::MinFill},
-      {"gate-dependency", dd::OrderingStrategy::GateDependency}};
+      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection}};
   std::size_t spectralNodes = 0U;
   double spectralMs = 0.0;
   std::size_t bestNodes = initial.nodes;
@@ -370,23 +367,12 @@ int main(int argc, char** argv) {
       dd::computeVariableOrder(*circuit, dd::OrderingStrategy::Identity), 0.0);
   const auto hybrid = measureDynamic(*circuit, bestLayout, bestMs);
 
-  printRow({path,
-            number(numQubits),
-            number(circuit->size()),
-            "ok",
-            number(initial.nodes),
-            number(initial.timeMs),
-            number(bestNodes),
-            number(bestMs),
-            bestName,
-            number(spectralNodes),
-            number(spectralMs),
-            number(dynamic.nodes),
-            number(dynamic.timeMs),
-            number(dynamic.exchanges),
-            number(hybrid.nodes),
-            number(hybrid.timeMs),
-            number(hybrid.exchanges),
+  printRow({path, number(numQubits), number(circuit->size()), "ok",
+            number(initial.nodes), number(initial.timeMs), number(bestNodes),
+            number(bestMs), bestName, number(spectralNodes), number(spectralMs),
+            number(dynamic.nodes), number(dynamic.timeMs),
+            number(dynamic.exchanges), number(hybrid.nodes),
+            number(hybrid.timeMs), number(hybrid.exchanges),
             number(peakRssMb())});
   return 0;
 }

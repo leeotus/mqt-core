@@ -105,8 +105,8 @@ void printUsage() {
       "  --sift-passes N       sweeps per reordering during construction "
       "(default 1)\n"
       "  --dynamic-start NAME  variable order that the dynamic construction "
-      "starts from: identity, degree, spectral, recursive_bisection, min_fill, "
-      "gate_dependency (default identity)\n"
+      "starts from: identity, degree, spectral, recursive_bisection "
+      "(default identity)\n"
       "  -h, --help            print this text\n");
 }
 
@@ -117,16 +117,14 @@ void printHeader() {
               "static_spectral_nodes,static_spectral_time_ms,"
               "static_recursive_bisection_nodes,"
               "static_recursive_bisection_time_ms,"
-              "static_min_fill_nodes,static_min_fill_time_ms,"
-              "static_gate_dependency_nodes,static_gate_dependency_time_ms,"
               "static_best_strategy,static_best_nodes,static_best_time_ms,"
               "dynamic_sifting_nodes,dynamic_sifting_time_ms,"
               "dynamic_sifting_exchanges,"
               "dynamic_sifting_spectral_nodes,dynamic_sifting_spectral_time_ms,"
               "dynamic_sifting_spectral_exchanges,"
-      "dynamic_construction_nodes,dynamic_construction_time_ms,"
-      "dynamic_construction_reorder_time_ms,"
-      "dynamic_construction_reorderings,dynamic_construction_exchanges,"
+              "dynamic_construction_nodes,dynamic_construction_time_ms,"
+              "dynamic_construction_reorder_time_ms,"
+              "dynamic_construction_reorderings,dynamic_construction_exchanges,"
               "dynamic_construction_peak_size,"
               "peak_rss_mb\n");
 }
@@ -298,9 +296,7 @@ int main(int argc, char** argv) {
         staticStrategies{
             {"degree", dd::OrderingStrategy::Degree},
             {"spectral", dd::OrderingStrategy::Spectral},
-            {"recursive_bisection", dd::OrderingStrategy::RecursiveBisection},
-            {"min_fill", dd::OrderingStrategy::MinFill},
-            {"gate_dependency", dd::OrderingStrategy::GateDependency}};
+            {"recursive_bisection", dd::OrderingStrategy::RecursiveBisection}};
 
     std::vector<std::pair<std::string, Measurement>> staticResults;
     for (const auto& [name, strategy] : staticStrategies) {
@@ -336,12 +332,6 @@ int main(int argc, char** argv) {
         }
         if (options.dynamicStart == "recursive_bisection") {
           return dd::OrderingStrategy::RecursiveBisection;
-        }
-        if (options.dynamicStart == "min_fill") {
-          return dd::OrderingStrategy::MinFill;
-        }
-        if (options.dynamicStart == "gate_dependency") {
-          return dd::OrderingStrategy::GateDependency;
         }
         return dd::OrderingStrategy::Identity;
       }();
