@@ -41,10 +41,6 @@ enum class OrderingStrategy : std::uint8_t {
   Spectral,
   /// Recursively bisect the interaction graph to keep related qubits adjacent.
   RecursiveBisection,
-  /// Order qubits by reversing a minimum-fill elimination order.
-  MinFill,
-  /// Order targets below the controls that act on them, as MQT DDSIM does.
-  GateDependency,
 };
 
 /**

@@ -78,11 +78,11 @@ struct Measurement {
 };
 
 /// A sparse operator, stored as (row, column) to value.
-using SparseOperator =
-    std::vector<std::pair<std::pair<std::size_t, std::size_t>, std::complex<double>>>;
+using SparseOperator = std::vector<
+    std::pair<std::pair<std::size_t, std::size_t>, std::complex<double>>>;
 
-[[nodiscard]] std::size_t countNodes(const dd::vEdge& edge,
-                                     std::unordered_set<const dd::vNode*>& seen) {
+[[nodiscard]] std::size_t
+countNodes(const dd::vEdge& edge, std::unordered_set<const dd::vNode*>& seen) {
   if (edge.isTerminal() || seen.find(edge.p) != seen.end()) {
     return 0U;
   }
@@ -94,8 +94,8 @@ using SparseOperator =
   return count;
 }
 
-[[nodiscard]] std::size_t countNodes(const dd::mEdge& edge,
-                                     std::unordered_set<const dd::mNode*>& seen) {
+[[nodiscard]] std::size_t
+countNodes(const dd::mEdge& edge, std::unordered_set<const dd::mNode*>& seen) {
   if (edge.isTerminal() || seen.find(edge.p) != seen.end()) {
     return 0U;
   }
@@ -187,10 +187,10 @@ void printUsage() {
 
 /// Build the unitary of a circuit under a level order and return the dense
 /// matrix in level order when requested.
-[[nodiscard]] Measurement runFunctionality(
-    const qc::QuantumComputation& circuit, const qc::Permutation& layout,
-    const std::size_t numQubits, const std::size_t repeats,
-    SparseOperator* matrix) {
+[[nodiscard]] Measurement
+runFunctionality(const qc::QuantumComputation& circuit,
+                 const qc::Permutation& layout, const std::size_t numQubits,
+                 const std::size_t repeats, SparseOperator* matrix) {
   Measurement measurement;
   double best = std::numeric_limits<double>::max();
   for (std::size_t repeat = 0U; repeat < repeats; ++repeat) {
@@ -213,7 +213,8 @@ void printUsage() {
     measurement.inserts = inserts;
     if (matrix != nullptr && repeat + 1U == repeats) {
       matrix->clear();
-      for (const auto& [key, value] : unitary.getSparseMatrix(numQubits, 1e-12)) {
+      for (const auto& [key, value] :
+           unitary.getSparseMatrix(numQubits, 1e-12)) {
         matrix->emplace_back(key, value);
       }
     }
@@ -222,10 +223,11 @@ void printUsage() {
   return measurement;
 }
 
-[[nodiscard]] Measurement
-runState(const qc::QuantumComputation& circuit, const qc::Permutation& layout,
-         const std::size_t numQubits, const std::size_t repeats,
-         dd::CVec* vector) {
+[[nodiscard]] Measurement runState(const qc::QuantumComputation& circuit,
+                                   const qc::Permutation& layout,
+                                   const std::size_t numQubits,
+                                   const std::size_t repeats,
+                                   dd::CVec* vector) {
   Measurement measurement;
   double best = std::numeric_limits<double>::max();
   for (std::size_t repeat = 0U; repeat < repeats; ++repeat) {
@@ -323,9 +325,7 @@ int main(int argc, char** argv) {
       {"identity", dd::OrderingStrategy::Identity},
       {"degree", dd::OrderingStrategy::Degree},
       {"spectral", dd::OrderingStrategy::Spectral},
-      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection},
-      {"min-fill", dd::OrderingStrategy::MinFill},
-      {"gate-dependency", dd::OrderingStrategy::GateDependency}};
+      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection}};
 
   std::ofstream csv;
   if (!options.csv.empty()) {
@@ -347,11 +347,9 @@ int main(int argc, char** argv) {
       continue;
     }
     circuit.removeFinalMeasurements();
-    const auto nonUnitary =
-        std::ranges::any_of(circuit, [](const auto& op) {
-          return op != nullptr &&
-                 (!op->isUnitary() || op->isIfElseOperation());
-        });
+    const auto nonUnitary = std::ranges::any_of(circuit, [](const auto& op) {
+      return op != nullptr && (!op->isUnitary() || op->isIfElseOperation());
+    });
     if (nonUnitary) {
       std::fprintf(stderr,
                    "%s: skipped, the circuit contains measurements, resets, "
@@ -420,16 +418,17 @@ int main(int argc, char** argv) {
         measurement = runState(circuit, layout, numQubits, options.repeats,
                                verify ? &vector : nullptr);
         if (verify) {
-          deviation = compareVectors(referenceVector, vector, layout, numQubits);
+          deviation =
+              compareVectors(referenceVector, vector, layout, numQubits);
           verified = deviation < 1e-9;
         } else {
           skipped = true;
         }
       } else {
         SparseOperator matrix;
-        measurement = runFunctionality(circuit, layout, numQubits,
-                                       options.repeats,
-                                       verify ? &matrix : nullptr);
+        measurement =
+            runFunctionality(circuit, layout, numQubits, options.repeats,
+                             verify ? &matrix : nullptr);
         if (verify) {
           deviation =
               compareMatrices(referenceMatrix, matrix, layout, numQubits);
@@ -446,20 +445,19 @@ int main(int argc, char** argv) {
         failures += 1;
       }
       if (igqmddStyle) {
-        const auto ratio =
-            baseline.nodes == 0U
-                ? 1.0
-                : static_cast<double>(baseline.nodes) /
-                      static_cast<double>(measurement.nodes);
+        const auto ratio = baseline.nodes == 0U
+                               ? 1.0
+                               : static_cast<double>(baseline.nodes) /
+                                     static_cast<double>(measurement.nodes);
         std::printf("%s %s 最终DD大小: %zu, 总时间: %.6fs, 压缩比: %.2fx"
                     ", 插入次数: %zu, 校验: %s\n",
                     path.c_str(), name.c_str(), measurement.nodes,
                     measurement.timeMs / 1000.0, ratio, measurement.inserts,
                     verdict);
       } else {
-        std::printf("   %-22s %9zu %10zu %10.3f %11.3e   %s\n",
-                    name.c_str(), measurement.nodes, measurement.inserts,
-                    measurement.timeMs, deviation, verdict);
+        std::printf("   %-22s %9zu %10zu %10.3f %11.3e   %s\n", name.c_str(),
+                    measurement.nodes, measurement.inserts, measurement.timeMs,
+                    deviation, verdict);
       }
       if (options.verbose) {
         printPermutation(layout, numQubits);
@@ -487,16 +485,17 @@ int main(int argc, char** argv) {
       return inserts;
     };
     for (const auto& [label, startFromSpectral] :
-         std::vector<std::pair<std::string, bool>>{{"sifting", false},
-                                                   {"sifting-spectral", true}}) {
+         std::vector<std::pair<std::string, bool>>{
+             {"sifting", false}, {"sifting-spectral", true}}) {
       if (!options.only.empty() && label != options.only) {
         continue;
       }
       auto package = std::make_unique<dd::Package>(numQubits);
-      auto dynamicLayout =
-          startFromSpectral
-              ? dd::computeVariableOrder(circuit, dd::OrderingStrategy::Spectral)
-              : dd::computeVariableOrder(circuit, dd::OrderingStrategy::Identity);
+      auto dynamicLayout = startFromSpectral
+                               ? dd::computeVariableOrder(
+                                     circuit, dd::OrderingStrategy::Spectral)
+                               : dd::computeVariableOrder(
+                                     circuit, dd::OrderingStrategy::Identity);
       auto reordered = circuit;
       reordered.initialLayout = dynamicLayout;
       reordered.outputPermutation = dynamicLayout;
@@ -508,8 +507,8 @@ int main(int argc, char** argv) {
       double dev = 0.0;
       bool ok = false;
       if (options.mode == "state") {
-        auto root = dd::simulate(reordered, dd::makeZeroState(numQubits, *package),
-                             *package);
+        auto root = dd::simulate(
+            reordered, dd::makeZeroState(numQubits, *package), *package);
         const auto start = Clock::now();
         root = dd::sift(*package, root, dynamicLayout, {}, &sifting);
         const auto stop = Clock::now();
@@ -518,8 +517,8 @@ int main(int argc, char** argv) {
         nodes = root.size();
         if (verify) {
           const auto vector = root.getVector();
-          dev = compareVectors(referenceVector, vector, dynamicLayout,
-                               numQubits);
+          dev =
+              compareVectors(referenceVector, vector, dynamicLayout, numQubits);
           ok = dev < 1e-9;
         }
       } else {
@@ -532,7 +531,8 @@ int main(int argc, char** argv) {
         nodes = root.size();
         if (verify) {
           SparseOperator matrix;
-          for (const auto& [key, value] : root.getSparseMatrix(numQubits, 1e-12)) {
+          for (const auto& [key, value] :
+               root.getSparseMatrix(numQubits, 1e-12)) {
             matrix.emplace_back(key, value);
           }
           dev = compareMatrices(referenceMatrix, matrix, dynamicLayout,
@@ -550,11 +550,10 @@ int main(int argc, char** argv) {
       }
 
       if (igqmddStyle) {
-        const auto ratio =
-            baseline.nodes == 0U
-                ? 1.0
-                : static_cast<double>(baseline.nodes) /
-                      static_cast<double>(nodes);
+        const auto ratio = baseline.nodes == 0U
+                               ? 1.0
+                               : static_cast<double>(baseline.nodes) /
+                                     static_cast<double>(nodes);
         std::printf("%s %s 最终DD大小: %zu, 总时间: %.6fs, 压缩比: %.2fx"
                     ", 插入次数: %zu, 交换次数: %zu, 校验: %s\n",
                     path.c_str(), label.c_str(), nodes, timeMs / 1000.0, ratio,
@@ -570,8 +569,8 @@ int main(int argc, char** argv) {
       if (csv) {
         csv << path << ',' << numQubits << ',' << circuit.size() << ','
             << options.mode << ',' << label << ',' << nodes << ',' << inserts
-            << ',' << timeMs << ',' << dev << ','
-            << (ok ? "true" : "false") << '\n';
+            << ',' << timeMs << ',' << dev << ',' << (ok ? "true" : "false")
+            << '\n';
       }
     }
     std::printf("\n");
