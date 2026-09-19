@@ -59,7 +59,9 @@ struct Options {
   std::size_t dynamicThreshold = 1000U;
   std::size_t siftPasses = 1U;
   std::string dynamicStart = "identity";
+  std::string only = "all";
   bool skipPostHoc = false;
+  bool staticOnly = false;
   bool header = false;
 };
 
@@ -74,6 +76,13 @@ struct Options {
     } else if (arg == "--dynamic-threshold" && i + 1 < argc) {
       options.dynamicThreshold = std::strtoul(argv[++i], nullptr, 10);
     } else if (arg == "--skip-post-hoc") {
+      options.skipPostHoc = true;
+    } else if (arg == "--static-only") {
+      options.staticOnly = true;
+      options.skipPostHoc = true;
+    } else if (arg == "--only" && i + 1 < argc) {
+      options.only = argv[++i];
+      options.staticOnly = true;
       options.skipPostHoc = true;
     } else if (arg == "--sift-passes" && i + 1 < argc) {
       options.siftPasses = std::strtoul(argv[++i], nullptr, 10);
@@ -102,6 +111,10 @@ void printUsage() {
       "  --dynamic-threshold N size that triggers construction-time reordering "
       "(default 1000)\n"
       "  --skip-post-hoc       skip the post-hoc sifting measurements\n"
+      "  --static-only         measure the static orders only\n"
+      "  --only VARIANT        measure a single variant: original, degree, "
+      "spectral,\n"
+      "                        recursive_bisection (default all)\n"
       "  --sift-passes N       sweeps per reordering during construction "
       "(default 1)\n"
       "  --dynamic-start NAME  variable order that the dynamic construction "
@@ -114,9 +127,12 @@ void printHeader() {
   std::printf("circuit,qubits,gates,status,"
               "original_nodes,original_time_ms,"
               "static_degree_nodes,static_degree_time_ms,"
+              "static_degree_order_ms,"
               "static_spectral_nodes,static_spectral_time_ms,"
+              "static_spectral_order_ms,"
               "static_recursive_bisection_nodes,"
               "static_recursive_bisection_time_ms,"
+              "static_recursive_bisection_order_ms,"
               "static_best_strategy,static_best_nodes,static_best_time_ms,"
               "dynamic_sifting_nodes,dynamic_sifting_time_ms,"
               "dynamic_sifting_exchanges,"
@@ -268,7 +284,11 @@ int main(int argc, char** argv) {
       }
     } catch (const std::exception& error) {
       std::fprintf(stderr, "%s: cannot read: %s\n", path.c_str(), error.what());
-      std::printf("%s,,,read-error,,,,,,,,,,,,,,,,,,,,,,\n", path.c_str());
+      std::printf("%s,,,read-error", path.c_str());
+      for (std::size_t i = 0U; i < 27U; ++i) {
+        std::printf(",");
+      }
+      std::printf("\n");
       continue;
     }
     circuit.removeFinalMeasurements();
@@ -279,18 +299,29 @@ int main(int argc, char** argv) {
     const auto gates = circuit.size();
 
     if (nonUnitary) {
-      std::printf("%s,%zu,%zu,non-unitary,,,,,,,,,,,,,,,,,,,,,,\n",
-                  path.c_str(), numQubits, gates);
+      std::printf("%s,%zu,%zu,non-unitary", path.c_str(), numQubits, gates);
+      for (std::size_t i = 0U; i < 27U; ++i) {
+        std::printf(",");
+      }
+      std::printf("\n");
       continue;
     }
     if (numQubits == 0U || numQubits > options.maxQubits) {
-      std::printf("%s,%zu,%zu,too-many-qubits,,,,,,,,,,,,,,,,,,,,,,\n",
-                  path.c_str(), numQubits, gates);
+      std::printf("%s,%zu,%zu,too-many-qubits", path.c_str(), numQubits, gates);
+      for (std::size_t i = 0U; i < 27U; ++i) {
+        std::printf(",");
+      }
+      std::printf("\n");
       continue;
     }
 
     const auto identity = identityPermutation(numQubits);
-    const auto original = measureBuild(circuit, identity, buildState);
+    const auto measureOriginal =
+        options.only == "all" || options.only == "original";
+    Measurement original;
+    if (measureOriginal) {
+      original = measureBuild(circuit, identity, buildState);
+    }
 
     const std::vector<std::pair<const char*, dd::OrderingStrategy>>
         staticStrategies{
@@ -298,16 +329,30 @@ int main(int argc, char** argv) {
             {"spectral", dd::OrderingStrategy::Spectral},
             {"recursive_bisection", dd::OrderingStrategy::RecursiveBisection}};
 
-    std::vector<std::pair<std::string, Measurement>> staticResults;
+    struct StaticResult {
+      std::string strategy;
+      Measurement measurement;
+      double orderTimeMs = 0.0;
+    };
+
+    std::vector<StaticResult> staticResults;
     for (const auto& [name, strategy] : staticStrategies) {
+      if (options.only != "all" && options.only != name) {
+        continue;
+      }
+      const auto orderStart = Clock::now();
       const auto layout = dd::computeVariableOrder(circuit, strategy);
-      staticResults.emplace_back(name,
-                                 measureBuild(circuit, layout, buildState));
+      const auto orderStop = Clock::now();
+      const std::chrono::duration<double, std::milli> orderElapsed =
+          orderStop - orderStart;
+      staticResults.push_back({name, measureBuild(circuit, layout, buildState),
+                               orderElapsed.count()});
     }
 
-    const auto* best = &staticResults.front();
+    const StaticResult* best = nullptr;
     for (const auto& entry : staticResults) {
-      if (entry.second.nodes < best->second.nodes) {
+      if (best == nullptr ||
+          entry.measurement.nodes < best->measurement.nodes) {
         best = &entry;
       }
     }
@@ -343,13 +388,30 @@ int main(int argc, char** argv) {
         circuit, buildState, options.dynamicThreshold, options.siftPasses,
         dynamicStart, &dynamicStatistics);
 
-    std::printf("%s,%zu,%zu,ok,%zu,%.3f", path.c_str(), numQubits, gates,
-                original.nodes, original.timeMs);
-    for (const auto& entry : staticResults) {
-      std::printf(",%zu,%.3f", entry.second.nodes, entry.second.timeMs);
+    std::printf("%s,%zu,%zu,ok", path.c_str(), numQubits, gates);
+    if (measureOriginal) {
+      std::printf(",%zu,%.3f", original.nodes, original.timeMs);
+    } else {
+      std::printf(",,");
     }
-    std::printf(",%s,%zu,%.3f", best->first.c_str(), best->second.nodes,
-                best->second.timeMs);
+    for (const auto& [name, strategy] : staticStrategies) {
+      const auto entry = std::ranges::find_if(
+          staticResults, [&name](const StaticResult& result) {
+            return result.strategy == name;
+          });
+      if (entry == staticResults.end()) {
+        std::printf(",,,");
+      } else {
+        std::printf(",%zu,%.3f,%.3f", entry->measurement.nodes,
+                    entry->measurement.timeMs, entry->orderTimeMs);
+      }
+    }
+    if (best == nullptr) {
+      std::printf(",,,");
+    } else {
+      std::printf(",%s,%zu,%.3f", best->strategy.c_str(),
+                  best->measurement.nodes, best->measurement.timeMs);
+    }
     if (options.skipPostHoc) {
       std::printf(",,,,,,");
     } else {
@@ -358,10 +420,14 @@ int main(int argc, char** argv) {
       std::printf(",%zu,%.3f,%zu", siftingSpectral.nodes,
                   siftingSpectral.timeMs, siftingSpectral.exchanges);
     }
-    std::printf(",%zu,%.3f,%.3f,%zu,%zu,%zu", dynamicConstruction.nodes,
-                dynamicConstruction.timeMs, dynamicStatistics.reorderTimeMs,
-                dynamicStatistics.reorderings, dynamicStatistics.exchanges,
-                dynamicStatistics.peakSize);
+    if (options.staticOnly) {
+      std::printf(",,,,,,");
+    } else {
+      std::printf(",%zu,%.3f,%.3f,%zu,%zu,%zu", dynamicConstruction.nodes,
+                  dynamicConstruction.timeMs, dynamicStatistics.reorderTimeMs,
+                  dynamicStatistics.reorderings, dynamicStatistics.exchanges,
+                  dynamicStatistics.peakSize);
+    }
     std::printf(",%.1f\n", peakRssMb());
     std::fflush(stdout);
   }
