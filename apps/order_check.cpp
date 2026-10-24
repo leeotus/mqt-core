@@ -325,7 +325,9 @@ int main(int argc, char** argv) {
       {"identity", dd::OrderingStrategy::Identity},
       {"degree", dd::OrderingStrategy::Degree},
       {"spectral", dd::OrderingStrategy::Spectral},
-      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection}};
+      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection},
+      {"force", dd::OrderingStrategy::Force},
+      {"mince", dd::OrderingStrategy::Mince}};
 
   std::ofstream csv;
   if (!options.csv.empty()) {

@@ -41,6 +41,17 @@ enum class OrderingStrategy : std::uint8_t {
   Spectral,
   /// Recursively bisect the interaction graph to keep related qubits adjacent.
   RecursiveBisection,
+  /// FORCE: repeatedly place every qubit at the center of gravity of the
+  /// multi-qubit gates that contain it.
+  /// @see Aloul, Markov, Sakallah, "FORCE: a fast and easy-to-implement
+  /// variable-ordering heuristic", GLSVLSI 2003, doi:10.1145/764808.764839
+  Force,
+  /// MINCE: recursively bisect a hypergraph by minimizing the number of cut
+  /// hyperedges, keeping every multi-qubit gate as one hyperedge.
+  /// @see Aloul, Markov, Sakallah, "MINCE: A static global variable-ordering
+  /// heuristic for SAT search and BDD manipulation", Journal of Universal
+  /// Computer Science 10(12):1562-1596, 2004
+  Mince,
 };
 
 /**

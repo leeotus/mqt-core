@@ -33,9 +33,10 @@ using namespace dd;
 
 namespace {
 
-constexpr std::array<OrderingStrategy, 3> NON_DEFAULT_STRATEGIES{
+constexpr std::array<OrderingStrategy, 5> NON_DEFAULT_STRATEGIES{
     OrderingStrategy::Degree, OrderingStrategy::Spectral,
-    OrderingStrategy::RecursiveBisection};
+    OrderingStrategy::RecursiveBisection, OrderingStrategy::Force,
+    OrderingStrategy::Mince};
 
 /**
  * @brief A four-qubit circuit whose interaction graph has four different
@@ -158,6 +159,47 @@ TEST(VariableOrdering, EveryStrategyReturnsABijection) {
       EXPECT_TRUE(level) << toString(strategy);
     }
   }
+}
+
+TEST(VariableOrdering, ForceKeepsAnAlreadyContiguousChain) {
+  constexpr std::size_t numQubits = 5U;
+  QuantumComputation qc(numQubits);
+  qc.h(0);
+  for (std::size_t qubit = 0U; qubit + 1U < numQubits; ++qubit) {
+    qc.cx(qubit, qubit + 1U);
+  }
+  const auto permutation = computeVariableOrder(qc, OrderingStrategy::Force);
+  ASSERT_EQ(permutation.size(), numQubits);
+  for (const auto& [qubit, level] : permutation) {
+    EXPECT_EQ(qubit, level)
+        << "FORCE must not scramble an already contiguous chain";
+  }
+  EXPECT_STREQ(toString(OrderingStrategy::Force), "force");
+}
+
+TEST(VariableOrdering, MinceKeepsAChainContiguous) {
+  constexpr std::size_t numQubits = 5U;
+  QuantumComputation qc(numQubits);
+  qc.h(0);
+  for (std::size_t qubit = 0U; qubit + 1U < numQubits; ++qubit) {
+    qc.cx(qubit, qubit + 1U);
+  }
+  const auto permutation = computeVariableOrder(qc, OrderingStrategy::Mince);
+  ASSERT_EQ(permutation.size(), numQubits);
+  // Recover the level order from the physical-to-level map.
+  std::vector<std::size_t> order(numQubits, 0U);
+  for (const auto& [qubit, level] : permutation) {
+    order[level] = qubit;
+  }
+  for (std::size_t level = 0U; level + 1U < numQubits; ++level) {
+    const auto distance = order[level] > order[level + 1U]
+                              ? order[level] - order[level + 1U]
+                              : order[level + 1U] - order[level];
+    EXPECT_EQ(distance, 1U)
+        << "MINCE must keep a chain contiguous, got " << order[level] << " -> "
+        << order[level + 1U];
+  }
+  EXPECT_STREQ(toString(OrderingStrategy::Mince), "mince");
 }
 
 TEST(VariableOrdering, ComputesInteractionDegrees) {

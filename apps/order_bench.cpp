@@ -133,6 +133,10 @@ void printHeader() {
               "static_recursive_bisection_nodes,"
               "static_recursive_bisection_time_ms,"
               "static_recursive_bisection_order_ms,"
+              "static_force_nodes,static_force_time_ms,"
+              "static_force_order_ms,"
+              "static_mince_nodes,static_mince_time_ms,"
+              "static_mince_order_ms,"
               "static_best_strategy,static_best_nodes,static_best_time_ms,"
               "dynamic_sifting_nodes,dynamic_sifting_time_ms,"
               "dynamic_sifting_exchanges,"
@@ -285,7 +289,7 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
       std::fprintf(stderr, "%s: cannot read: %s\n", path.c_str(), error.what());
       std::printf("%s,,,read-error", path.c_str());
-      for (std::size_t i = 0U; i < 27U; ++i) {
+      for (std::size_t i = 0U; i < 33U; ++i) {
         std::printf(",");
       }
       std::printf("\n");
@@ -300,7 +304,7 @@ int main(int argc, char** argv) {
 
     if (nonUnitary) {
       std::printf("%s,%zu,%zu,non-unitary", path.c_str(), numQubits, gates);
-      for (std::size_t i = 0U; i < 27U; ++i) {
+      for (std::size_t i = 0U; i < 33U; ++i) {
         std::printf(",");
       }
       std::printf("\n");
@@ -308,7 +312,7 @@ int main(int argc, char** argv) {
     }
     if (numQubits == 0U || numQubits > options.maxQubits) {
       std::printf("%s,%zu,%zu,too-many-qubits", path.c_str(), numQubits, gates);
-      for (std::size_t i = 0U; i < 27U; ++i) {
+      for (std::size_t i = 0U; i < 33U; ++i) {
         std::printf(",");
       }
       std::printf("\n");
@@ -327,7 +331,9 @@ int main(int argc, char** argv) {
         staticStrategies{
             {"degree", dd::OrderingStrategy::Degree},
             {"spectral", dd::OrderingStrategy::Spectral},
-            {"recursive_bisection", dd::OrderingStrategy::RecursiveBisection}};
+            {"recursive_bisection", dd::OrderingStrategy::RecursiveBisection},
+            {"force", dd::OrderingStrategy::Force},
+            {"mince", dd::OrderingStrategy::Mince}};
 
     struct StaticResult {
       std::string strategy;
