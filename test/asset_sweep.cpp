@@ -339,7 +339,8 @@ int main(int argc, char** argv) {
   const std::vector<std::pair<std::string, dd::OrderingStrategy>> strategies{
       {"degree", dd::OrderingStrategy::Degree},
       {"spectral", dd::OrderingStrategy::Spectral},
-      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection}};
+      {"recursive-bisection", dd::OrderingStrategy::RecursiveBisection},
+      {"quantum-score", dd::OrderingStrategy::QuantumScore}};
   std::size_t spectralNodes = 0U;
   double spectralMs = 0.0;
   std::size_t bestNodes = initial.nodes;

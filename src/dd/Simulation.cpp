@@ -241,6 +241,9 @@ VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
       applyVirtualOperation(*op, permutation);
     } else {
       out = applyUnitaryOperation(*op, out, dd, permutation);
+      if (statistics != nullptr) {
+        statistics->peakSize = std::max(statistics->peakSize, out.size());
+      }
       if (options.dynamic.enabled) {
         reorderer(dd, out, permutation, statistics);
       }
@@ -265,6 +268,7 @@ VectorDD simulate(const qc::QuantumComputation& qc, const VectorDD& in,
   }
 
   if (statistics != nullptr) {
+    statistics->peakSize = std::max(statistics->peakSize, out.size());
     statistics->finalSize = out.size();
   }
   return out;

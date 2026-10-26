@@ -15,6 +15,7 @@
 #include "ir/QuantumComputation.hpp"
 #include "ir/operations/OpType.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace dd {
@@ -38,6 +39,9 @@ MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd,
     }
 
     e = applyUnitaryOperation(*op, e, dd, permutation);
+    if (statistics != nullptr) {
+      statistics->peakSize = std::max(statistics->peakSize, e.size());
+    }
     if (options.dynamic.enabled) {
       reorderer(dd, e, permutation, statistics);
     }
@@ -59,6 +63,7 @@ MatrixDD buildFunctionality(const qc::QuantumComputation& qc, Package& dd,
   e = dd.reduceGarbage(e, qc.getGarbage());
 
   if (statistics != nullptr) {
+    statistics->peakSize = std::max(statistics->peakSize, e.size());
     statistics->finalSize = e.size();
   }
   return e;

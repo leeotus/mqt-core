@@ -30,129 +30,173 @@ namespace dd {
 namespace {
 
 /**
- * @brief The weighted interaction graph of a circuit
+ * @brief Weighted circuit structure shared by all static ordering strategies
+ */
+struct QuantumOrderingProblem {
+  /// The number of qubits, which is also the number of vertices
+  std::size_t numQubits = 0U;
+  /// The number of multi-qubit gates that use a qubit as a control
+  std::vector<std::size_t> controlCount;
+  /// The number of nontrivial parameterized gates that act on a qubit
+  std::vector<std::size_t> parameterizedGateCount;
+  /// The number of multi-qubit gates that act on a qubit
+  std::vector<std::size_t> supportCount;
+  /// One distinct support set for every multi-qubit gate
+  std::vector<std::vector<std::size_t>> hyperedges;
+  /// The number of gates behind every hyperedge
+  std::vector<double> hyperedgeWeights;
+  /// Whether the circuit contains an operation that is not unitary
+  bool hasNonUnitaryOperation = false;
+};
+
+/**
+ * @brief The weighted interaction graph obtained from the quantum hypergraph
  */
 struct InteractionGraph {
   /// The number of qubits, which is also the number of vertices
   std::size_t numQubits = 0U;
-  /// The gate count between every pair of qubits
-  std::vector<std::vector<std::size_t>> weight;
-  /// The sum of the incident gate counts of every qubit
-  std::vector<std::size_t> degree;
+  /// The normalized gate count between every pair of qubits
+  std::vector<std::vector<double>> weight;
+  /// The sum of the incident normalized gate counts of every qubit
+  std::vector<double> degree;
 };
 
 /**
- * @brief Add the interactions of one operation to a graph
- * @details The function recurses into compound operations and ignores
- * operations that are not standard operations, such as measurements and
- * resets.
+ * @brief Return whether all parameters are integer multiples of pi/2
+ * @details The scoring method treats these rotations as trivial because their
+ * matrix entries are limited to 0, 1, -1, i, and -i.
  */
-void addOperation(InteractionGraph& graph, const qc::Operation& op) {
+[[nodiscard]] bool hasOnlyTrivialParameters(const qc::Operation& op) {
+  const auto& parameters = op.getParameter();
+  if (parameters.empty()) {
+    return true;
+  }
+  constexpr double TOLERANCE = 1e-12;
+  return std::ranges::all_of(parameters, [](const qc::fp value) {
+    const auto multiple = value / (qc::PI / 2.0);
+    return std::abs(multiple - std::nearbyint(multiple)) <= TOLERANCE;
+  });
+}
+
+/**
+ * @brief Add one operation to the weighted quantum interaction structure
+ */
+void addQuantumOperation(
+    QuantumOrderingProblem& problem,
+    std::map<std::vector<std::size_t>, double>& hyperedgeWeights,
+    const qc::Operation& op) {
   if (op.isCompoundOperation()) {
     const auto* compound =
         dynamic_cast<const qc::CompoundOperation*>(&op); // NOLINT
     if (compound != nullptr) {
       for (const auto& child : *compound) {
-        addOperation(graph, *child);
+        addQuantumOperation(problem, hyperedgeWeights, *child);
       }
     }
     return;
   }
 
+  if (op.isNonUnitaryOperation() || !op.isUnitary()) {
+    problem.hasNonUnitaryOperation = true;
+    return;
+  }
   if (!op.isStandardOperation()) {
     return;
   }
 
-  std::vector<std::size_t> involved;
+  std::vector<std::size_t> support;
+  support.reserve(op.getNqubits());
   for (const auto& control : op.getControls()) {
-    involved.emplace_back(control.qubit);
+    support.emplace_back(control.qubit);
+    if (control.qubit < problem.controlCount.size()) {
+      ++problem.controlCount[control.qubit];
+    }
   }
   for (const auto target : op.getTargets()) {
-    involved.emplace_back(target);
+    support.emplace_back(target);
+  }
+  std::ranges::sort(support);
+  support.erase(std::ranges::unique(support).begin(), support.end());
+  if (support.size() >= 2U) {
+    ++hyperedgeWeights[support];
+    for (const auto qubit : support) {
+      if (qubit < problem.supportCount.size()) {
+        ++problem.supportCount[qubit];
+      }
+    }
   }
 
-  for (std::size_t i = 0U; i < involved.size(); ++i) {
-    for (std::size_t j = i + 1U; j < involved.size(); ++j) {
-      const auto a = involved[i];
-      const auto b = involved[j];
-      if (a == b || a >= graph.numQubits || b >= graph.numQubits) {
-        continue;
+  if (!hasOnlyTrivialParameters(op)) {
+    for (const auto target : op.getTargets()) {
+      if (target < problem.parameterizedGateCount.size()) {
+        ++problem.parameterizedGateCount[target];
       }
-      ++graph.weight[a][b];
-      ++graph.weight[b][a];
-      ++graph.degree[a];
-      ++graph.degree[b];
     }
   }
 }
 
 /**
- * @brief Build the weighted interaction graph of a circuit
+ * @brief Build the weighted interaction structure of a quantum circuit
  */
-[[nodiscard]] InteractionGraph
-buildInteractionGraph(const qc::QuantumComputation& circuit) {
-  InteractionGraph graph;
-  graph.numQubits = circuit.getNqubits();
-  graph.weight.assign(graph.numQubits,
-                      std::vector<std::size_t>(graph.numQubits, 0U));
-  graph.degree.assign(graph.numQubits, 0U);
+[[nodiscard]] QuantumOrderingProblem
+buildQuantumOrderingProblem(const qc::QuantumComputation& circuit) {
+  QuantumOrderingProblem problem;
+  problem.numQubits = circuit.getNqubits();
+  problem.controlCount.assign(problem.numQubits, 0U);
+  problem.parameterizedGateCount.assign(problem.numQubits, 0U);
+  problem.supportCount.assign(problem.numQubits, 0U);
+
+  std::map<std::vector<std::size_t>, double> hyperedgeWeights;
   for (const auto& op : circuit) {
     if (op) {
-      addOperation(graph, *op);
+      addQuantumOperation(problem, hyperedgeWeights, *op);
+    }
+  }
+  problem.hyperedges.reserve(hyperedgeWeights.size());
+  problem.hyperedgeWeights.reserve(hyperedgeWeights.size());
+  for (auto& [support, weight] : hyperedgeWeights) {
+    problem.hyperedges.emplace_back(std::move(support));
+    problem.hyperedgeWeights.emplace_back(weight);
+  }
+  return problem;
+}
+
+/**
+ * @brief Compute the normalized pairwise interaction graph
+ * @details A hyperedge of size k contributes weight w/(k-1) to every incident
+ * pair. This keeps one multi-qubit gate from contributing k times as much as
+ * a two-qubit gate.
+ */
+[[nodiscard]] InteractionGraph
+buildInteractionGraph(const QuantumOrderingProblem& problem) {
+  InteractionGraph graph;
+  graph.numQubits = problem.numQubits;
+  graph.weight.assign(graph.numQubits,
+                      std::vector<double>(graph.numQubits, 0.0));
+  graph.degree.assign(graph.numQubits, 0.0);
+
+  for (std::size_t index = 0U; index < problem.hyperedges.size(); ++index) {
+    const auto& edge = problem.hyperedges[index];
+    if (edge.size() < 2U) {
+      continue;
+    }
+    const auto pairWeight =
+        problem.hyperedgeWeights[index] / static_cast<double>(edge.size() - 1U);
+    for (std::size_t i = 0U; i < edge.size(); ++i) {
+      for (std::size_t j = i + 1U; j < edge.size(); ++j) {
+        const auto a = edge[i];
+        const auto b = edge[j];
+        if (a == b || a >= graph.numQubits || b >= graph.numQubits) {
+          continue;
+        }
+        graph.weight[a][b] += pairWeight;
+        graph.weight[b][a] += pairWeight;
+        graph.degree[a] += pairWeight;
+        graph.degree[b] += pairWeight;
+      }
     }
   }
   return graph;
-}
-
-/**
- * @brief Add the qubits of one operation as a hyperedge
- * @details A multi-qubit gate couples all of its qubits at once. Expanding it
- * into pairwise edges overstates the coupling, so the FORCE heuristic keeps
- * the gate as one hyperedge.
- */
-void addHyperedge(std::vector<std::vector<std::size_t>>& edges,
-                  const qc::Operation& op) {
-  if (op.isCompoundOperation()) {
-    const auto* compound =
-        dynamic_cast<const qc::CompoundOperation*>(&op); // NOLINT
-    if (compound != nullptr) {
-      for (const auto& child : *compound) {
-        addHyperedge(edges, *child);
-      }
-    }
-    return;
-  }
-
-  if (!op.isStandardOperation()) {
-    return;
-  }
-
-  std::vector<std::size_t> involved;
-  for (const auto& control : op.getControls()) {
-    involved.emplace_back(control.qubit);
-  }
-  for (const auto target : op.getTargets()) {
-    involved.emplace_back(target);
-  }
-  std::ranges::sort(involved);
-  involved.erase(std::ranges::unique(involved).begin(), involved.end());
-  if (involved.size() >= 2U) {
-    edges.emplace_back(std::move(involved));
-  }
-}
-
-/**
- * @brief Collect the hyperedges of a circuit
- */
-[[nodiscard]] std::vector<std::vector<std::size_t>>
-buildHyperedges(const qc::QuantumComputation& circuit) {
-  std::vector<std::vector<std::size_t>> edges;
-  for (const auto& op : circuit) {
-    if (op) {
-      addHyperedge(edges, *op);
-    }
-  }
-  return edges;
 }
 
 /**
@@ -162,44 +206,44 @@ buildHyperedges(const qc::QuantumComputation& circuit) {
  * hyperedges that contain them, and the process repeats until the order stops
  * changing. The method is the FORCE heuristic of Aloul, Markov, and Sakallah,
  * GLSVLSI 2003, doi:10.1145/764808.764839.
- * @param edges The hyperedges, one per multi-qubit gate
- * @param numQubits The number of qubits
+ * @param problem The weighted quantum interaction structure
  * @return The qubit at every level
  */
 [[nodiscard]] std::vector<std::size_t>
-forceOrder(const std::vector<std::vector<std::size_t>>& edges,
-           const std::size_t numQubits) {
+forceOrder(const QuantumOrderingProblem& problem) {
+  const auto numQubits = problem.numQubits;
   std::vector<std::size_t> order(numQubits);
   std::iota(order.begin(), order.end(), 0U);
-  if (edges.empty()) {
+  if (problem.hyperedges.empty()) {
     return order;
   }
 
   constexpr std::size_t maxIterations = 50U;
   std::vector<std::size_t> position(numQubits, 0U);
-  std::vector<double> center(edges.size(), 0.0);
+  std::vector<double> center(problem.hyperedges.size(), 0.0);
   for (std::size_t iteration = 0U; iteration < maxIterations; ++iteration) {
     for (std::size_t level = 0U; level < numQubits; ++level) {
       position[order[level]] = level;
     }
-    for (std::size_t index = 0U; index < edges.size(); ++index) {
+    for (std::size_t index = 0U; index < problem.hyperedges.size(); ++index) {
       double sum = 0.0;
-      for (const auto qubit : edges[index]) {
+      for (const auto qubit : problem.hyperedges[index]) {
         sum += static_cast<double>(position[qubit]);
       }
-      center[index] = sum / static_cast<double>(edges[index].size());
+      center[index] =
+          sum / static_cast<double>(problem.hyperedges[index].size());
     }
     std::vector<double> span(numQubits, 0.0);
-    std::vector<std::size_t> count(numQubits, 0U);
-    for (std::size_t index = 0U; index < edges.size(); ++index) {
-      for (const auto qubit : edges[index]) {
-        span[qubit] += center[index];
-        ++count[qubit];
+    std::vector<double> weightSum(numQubits, 0.0);
+    for (std::size_t index = 0U; index < problem.hyperedges.size(); ++index) {
+      for (const auto qubit : problem.hyperedges[index]) {
+        span[qubit] += center[index] * problem.hyperedgeWeights[index];
+        weightSum[qubit] += problem.hyperedgeWeights[index];
       }
     }
     for (std::size_t qubit = 0U; qubit < numQubits; ++qubit) {
-      if (count[qubit] != 0U) {
-        span[qubit] /= static_cast<double>(count[qubit]);
+      if (weightSum[qubit] > 0.0) {
+        span[qubit] /= weightSum[qubit];
       } else {
         span[qubit] = static_cast<double>(position[qubit]);
       }
@@ -384,6 +428,51 @@ degreeOrder(const InteractionGraph& graph,
 }
 
 /**
+ * @brief Order qubits by the quantum gate features of the circuit
+ * @details Qubits with more control uses and more nontrivial parameterized
+ * gates act near the root. Control counts determine rank scores while a
+ * monotone logarithm of the parameterized-gate count adjusts that score.
+ */
+[[nodiscard]] std::vector<std::size_t>
+quantumScoreOrder(const QuantumOrderingProblem& problem) {
+  const auto numQubits = problem.numQubits;
+  std::vector<std::size_t> order(numQubits);
+  std::iota(order.begin(), order.end(), 0U);
+  if (problem.hasNonUnitaryOperation) {
+    return order;
+  }
+
+  std::vector<std::size_t> byControlCount = order;
+  std::ranges::stable_sort(byControlCount, {},
+                           [&problem](const std::size_t qubit) {
+                             return problem.controlCount[qubit];
+                           });
+
+  std::vector<double> score(numQubits, 1.0);
+  double rankScore = 1.0;
+  std::size_t previousCount = problem.controlCount[byControlCount.front()];
+  for (const auto qubit : byControlCount) {
+    if (problem.controlCount[qubit] != previousCount) {
+      rankScore *= 2.0;
+      previousCount = problem.controlCount[qubit];
+    }
+    score[qubit] = rankScore;
+  }
+
+  for (const auto qubit : order) {
+    const auto parameterizedCount = problem.parameterizedGateCount[qubit];
+    if (parameterizedCount > 0U) {
+      score[qubit] *= 1.0 + std::log1p(static_cast<double>(parameterizedCount));
+    }
+  }
+
+  std::ranges::stable_sort(order, {}, [&score](const std::size_t qubit) {
+    return std::pair{score[qubit], qubit};
+  });
+  return order;
+}
+
+/**
  * @brief Recursively bisect a vertex set and append the resulting level order
  */
 void bisect(const InteractionGraph& graph,
@@ -467,7 +556,7 @@ struct HyperBisection {
 [[nodiscard]] HyperBisection
 bisectHypergraph(const InteractionGraph& graph,
                  const std::vector<std::vector<std::size_t>>& edges,
-                 const std::vector<std::size_t>& weights,
+                 const std::vector<double>& weights,
                  const std::vector<std::size_t>& vertices) {
   const auto n = vertices.size();
   std::vector<bool> inSet(graph.numQubits, false);
@@ -477,7 +566,7 @@ bisectHypergraph(const InteractionGraph& graph,
 
   // Project the hyperedges onto the current vertex set.
   std::vector<std::vector<std::size_t>> localEdges;
-  std::vector<std::size_t> localWeights;
+  std::vector<double> localWeights;
   for (std::size_t index = 0U; index < edges.size(); ++index) {
     std::vector<std::size_t> projected;
     for (const auto qubit : edges[index]) {
@@ -508,8 +597,7 @@ bisectHypergraph(const InteractionGraph& graph,
     for (std::size_t index = 0U; index < n; ++index) {
       keyed.emplace_back(fiedler[index], vertices[index]);
     }
-    std::ranges::stable_sort(
-        keyed, {}, &std::pair<double, std::size_t>::first);
+    std::ranges::stable_sort(keyed, {}, &std::pair<double, std::size_t>::first);
     for (std::size_t index = 0U; index < n; ++index) {
       sorted[index] = keyed[index].second;
     }
@@ -534,18 +622,18 @@ bisectHypergraph(const InteractionGraph& graph,
   // Balanced single-vertex moves while the cut decreases.
   for (std::size_t step = 0U; step < n; ++step) {
     std::size_t bestVertex = n;
-    std::int64_t bestDelta = 0;
+    double bestDelta = 0.0;
     for (const auto qubit : sorted) {
       const bool fromLeft = !side[qubit];
       const auto newLeft = fromLeft ? leftSize - 1U : leftSize + 1U;
       const auto newRight = fromLeft ? rightSize + 1U : rightSize - 1U;
-      const auto newDiff = newLeft > newRight ? newLeft - newRight
-                                              : newRight - newLeft;
+      const auto newDiff =
+          newLeft > newRight ? newLeft - newRight : newRight - newLeft;
       // Never empty a part: the recursion would then repeat the same split.
       if (newLeft == 0U || newRight == 0U || newDiff > 2U) {
         continue;
       }
-      std::int64_t delta = 0;
+      double delta = 0.0;
       for (const auto index : incident[qubit]) {
         const auto size = localEdges[index].size();
         const auto beforeLeft = leftCount[index];
@@ -554,9 +642,8 @@ bisectHypergraph(const InteractionGraph& graph,
         const auto afterRight = size - afterLeft;
         const bool cutBefore = beforeLeft > 0U && beforeRight > 0U;
         const bool cutAfter = afterLeft > 0U && afterRight > 0U;
-        delta +=
-            static_cast<std::int64_t>(localWeights[index]) *
-            ((cutAfter ? 1 : 0) - (cutBefore ? 1 : 0));
+        delta += localWeights[index] * (static_cast<double>(cutAfter ? 1 : 0) -
+                                        static_cast<double>(cutBefore ? 1 : 0));
       }
       if (delta < bestDelta) {
         bestDelta = delta;
@@ -596,21 +683,20 @@ bisectHypergraph(const InteractionGraph& graph,
  */
 void minceRecurse(const InteractionGraph& graph,
                   const std::vector<std::vector<std::size_t>>& edges,
-                  const std::vector<std::size_t>& weights,
+                  const std::vector<double>& weights,
                   const std::vector<std::size_t>& vertices,
                   std::vector<std::size_t>& order) {
   if (vertices.size() <= 1U) {
     order.insert(order.end(), vertices.begin(), vertices.end());
     return;
   }
-  auto [left, right] =
-      bisectHypergraph(graph, edges, weights, vertices);
+  auto [left, right] = bisectHypergraph(graph, edges, weights, vertices);
   if (left.empty() || right.empty()) {
     // The refinement must never empty a part. Fall back to a plain half split
     // so that the recursion always shrinks the vertex set.
     const auto middle = vertices.size() / 2U;
-    left.assign(vertices.begin(), vertices.begin() +
-                                      static_cast<std::ptrdiff_t>(middle));
+    left.assign(vertices.begin(),
+                vertices.begin() + static_cast<std::ptrdiff_t>(middle));
     right.assign(vertices.begin() + static_cast<std::ptrdiff_t>(middle),
                  vertices.end());
   }
@@ -625,11 +711,11 @@ void minceRecurse(const InteractionGraph& graph,
       return graph.weight[a][b];
     };
     const auto lf = leftOrder;
-    const auto lr = std::vector<std::size_t>(leftOrder.rbegin(),
-                                             leftOrder.rend());
+    const auto lr =
+        std::vector<std::size_t>(leftOrder.rbegin(), leftOrder.rend());
     const auto rf = rightOrder;
-    const auto rr = std::vector<std::size_t>(rightOrder.rbegin(),
-                                             rightOrder.rend());
+    const auto rr =
+        std::vector<std::size_t>(rightOrder.rbegin(), rightOrder.rend());
     const std::array<std::pair<const std::vector<std::size_t>*,
                                const std::vector<std::size_t>*>,
                      4>
@@ -659,30 +745,20 @@ void minceRecurse(const InteractionGraph& graph,
  * the number of cut gates, and orders the qubits by the depth-first traversal
  * of the partition tree. The method is MINCE, the hypergraph partitioner of
  * Aloul, Markov, and Sakallah, JUCS 10(12):1562-1596, 2004.
- * @param circuit The circuit to inspect
+ * @param problem The weighted quantum interaction structure
  * @param graph Its pairwise interaction graph, used for the initial split
  * @return The qubit at every level
  */
 [[nodiscard]] std::vector<std::size_t>
-minceOrder(const qc::QuantumComputation& circuit,
+minceOrder(const QuantumOrderingProblem& problem,
            const InteractionGraph& graph) {
-  const auto numQubits = circuit.getNqubits();
-  const auto raw = buildHyperedges(circuit);
-  std::map<std::vector<std::size_t>, std::size_t> counts;
-  for (const auto& edge : raw) {
-    ++counts[edge];
-  }
-  std::vector<std::vector<std::size_t>> edges;
-  std::vector<std::size_t> weights;
-  for (const auto& [edge, count] : counts) {
-    edges.emplace_back(edge);
-    weights.emplace_back(count);
-  }
+  const auto numQubits = problem.numQubits;
   std::vector<std::size_t> vertices(numQubits);
   std::iota(vertices.begin(), vertices.end(), 0U);
   std::vector<std::size_t> order;
   order.reserve(numQubits);
-  minceRecurse(graph, edges, weights, vertices, order);
+  minceRecurse(graph, problem.hyperedges, problem.hyperedgeWeights, vertices,
+               order);
   return order;
 }
 
@@ -707,7 +783,7 @@ void completeOrder(std::vector<std::size_t>& order, const std::size_t n) {
 
 std::vector<std::size_t>
 interactionDegrees(const qc::QuantumComputation& circuit) {
-  return buildInteractionGraph(circuit).degree;
+  return buildQuantumOrderingProblem(circuit).supportCount;
 }
 
 qc::Permutation computeVariableOrder(const qc::QuantumComputation& circuit,
@@ -717,7 +793,8 @@ qc::Permutation computeVariableOrder(const qc::QuantumComputation& circuit,
     return {};
   }
 
-  const auto graph = buildInteractionGraph(circuit);
+  const auto problem = buildQuantumOrderingProblem(circuit);
+  const auto graph = buildInteractionGraph(problem);
   std::vector<std::size_t> order; // order[level] = qubit
 
   switch (strategy) {
@@ -764,11 +841,15 @@ qc::Permutation computeVariableOrder(const qc::QuantumComputation& circuit,
     break;
   }
   case OrderingStrategy::Force: {
-    order = forceOrder(buildHyperedges(circuit), numQubits);
+    order = forceOrder(problem);
     break;
   }
   case OrderingStrategy::Mince: {
-    order = minceOrder(circuit, graph);
+    order = minceOrder(problem, graph);
+    break;
+  }
+  case OrderingStrategy::QuantumScore: {
+    order = quantumScoreOrder(problem);
     break;
   }
   }
@@ -797,6 +878,8 @@ const char* toString(const OrderingStrategy strategy) {
     return "force";
   case OrderingStrategy::Mince:
     return "mince";
+  case OrderingStrategy::QuantumScore:
+    return "quantum-score";
   }
   return "unknown";
 }

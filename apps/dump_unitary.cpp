@@ -45,7 +45,8 @@ int main(int argc, char** argv) {
 
   const std::vector<dd::OrderingStrategy> strategies{
       dd::OrderingStrategy::Identity, dd::OrderingStrategy::Degree,
-      dd::OrderingStrategy::Spectral, dd::OrderingStrategy::RecursiveBisection};
+      dd::OrderingStrategy::Spectral, dd::OrderingStrategy::RecursiveBisection,
+      dd::OrderingStrategy::QuantumScore};
 
   for (int index = 1; index < argc; ++index) {
     const std::string path = argv[index];

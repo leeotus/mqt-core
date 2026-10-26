@@ -33,10 +33,13 @@ using namespace dd;
 
 namespace {
 
-constexpr std::array<OrderingStrategy, 5> NON_DEFAULT_STRATEGIES{
-    OrderingStrategy::Degree, OrderingStrategy::Spectral,
-    OrderingStrategy::RecursiveBisection, OrderingStrategy::Force,
-    OrderingStrategy::Mince};
+constexpr std::array<OrderingStrategy, 6> NON_DEFAULT_STRATEGIES{
+    OrderingStrategy::Degree,
+    OrderingStrategy::Spectral,
+    OrderingStrategy::RecursiveBisection,
+    OrderingStrategy::Force,
+    OrderingStrategy::Mince,
+    OrderingStrategy::QuantumScore};
 
 /**
  * @brief A four-qubit circuit whose interaction graph has four different
@@ -195,11 +198,54 @@ TEST(VariableOrdering, MinceKeepsAChainContiguous) {
     const auto distance = order[level] > order[level + 1U]
                               ? order[level] - order[level + 1U]
                               : order[level + 1U] - order[level];
-    EXPECT_EQ(distance, 1U)
-        << "MINCE must keep a chain contiguous, got " << order[level] << " -> "
-        << order[level + 1U];
+    EXPECT_EQ(distance, 1U) << "MINCE must keep a chain contiguous, got "
+                            << order[level] << " -> " << order[level + 1U];
   }
   EXPECT_STREQ(toString(OrderingStrategy::Mince), "mince");
+}
+
+TEST(VariableOrdering, QuantumScorePlacesControlHeavyQubitsHigher) {
+  QuantumComputation qc(4);
+  qc.cx(0, 1);
+  qc.cx(0, 2);
+  qc.cx(0, 3);
+
+  const auto permutation =
+      computeVariableOrder(qc, OrderingStrategy::QuantumScore);
+  EXPECT_EQ(permutation.at(0), 3U);
+  EXPECT_STREQ(toString(OrderingStrategy::QuantumScore), "quantum-score");
+}
+
+TEST(VariableOrdering, QuantumScoreUsesNontrivialParameterizedGates) {
+  QuantumComputation qc(3);
+  qc.rx(qc::PI / 7.0, 1);
+  qc.ry(qc::PI / 5.0, 1);
+  qc.rx(qc::PI / 3.0, 2);
+
+  const auto permutation =
+      computeVariableOrder(qc, OrderingStrategy::QuantumScore);
+  EXPECT_GT(permutation.at(1), permutation.at(2));
+}
+
+TEST(VariableOrdering, QuantumScoreIgnoresTrivialPiOverTwoRotations) {
+  QuantumComputation qc(2);
+  qc.rx(qc::PI / 2.0, 0);
+  qc.rx(qc::PI / 3.0, 1);
+
+  const auto permutation =
+      computeVariableOrder(qc, OrderingStrategy::QuantumScore);
+  EXPECT_GT(permutation.at(1), permutation.at(0));
+}
+
+TEST(VariableOrdering, QuantumScoreFallsBackForNonUnitaryCircuits) {
+  QuantumComputation qc(2);
+  qc.addClassicalRegister(1);
+  qc.h(0);
+  qc.measure(0, 0);
+
+  const auto permutation =
+      computeVariableOrder(qc, OrderingStrategy::QuantumScore);
+  EXPECT_EQ(permutation, computeVariableOrder(qc, OrderingStrategy::Identity));
 }
 
 TEST(VariableOrdering, ComputesInteractionDegrees) {
@@ -210,6 +256,29 @@ TEST(VariableOrdering, ComputesInteractionDegrees) {
   EXPECT_EQ(degrees[1], 1U);
   EXPECT_EQ(degrees[2], 1U);
   EXPECT_EQ(degrees[3], 1U);
+}
+
+TEST(VariableOrdering, MulticontrolGateDoesNotOvercountInteractionDegrees) {
+  QuantumComputation qc(4);
+  qc.mcx({0, 1, 2}, 3);
+
+  const auto degrees = interactionDegrees(qc);
+  ASSERT_EQ(degrees.size(), 4U);
+  for (const auto degree : degrees) {
+    EXPECT_EQ(degree, 1U);
+  }
+}
+
+TEST(VariableOrdering, RepeatedMulticontrolGatesAccumulateOneUnitPerQubit) {
+  QuantumComputation qc(4);
+  qc.mcx({0, 1, 2}, 3);
+  qc.mcx({0, 1, 2}, 3);
+
+  const auto degrees = interactionDegrees(qc);
+  ASSERT_EQ(degrees.size(), 4U);
+  for (const auto degree : degrees) {
+    EXPECT_EQ(degree, 2U);
+  }
 }
 
 TEST(VariableOrdering, StrategiesDifferOnAsymmetricCircuit) {

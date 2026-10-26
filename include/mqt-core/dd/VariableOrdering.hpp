@@ -52,14 +52,19 @@ enum class OrderingStrategy : std::uint8_t {
   /// heuristic for SAT search and BDD manipulation", Journal of Universal
   /// Computer Science 10(12):1562-1596, 2004
   Mince,
+  /// Score qubits by their use as controls of multi-qubit gates and by the
+  /// number of nontrivial parameterized gates that act on them.
+  /// @see Kimura, Fujita, Wille, "Scoring-based Static Variable Ordering for
+  /// Decision Diagram-based Quantum Circuit Simulation", arXiv:2512.01186,
+  /// 2025
+  QuantumScore,
 };
 
 /**
- * @brief Return the weighted interaction degree of every qubit
- * @details The interaction graph of a circuit has one vertex per qubit and one
- * weighted edge per pair of qubits that occur together in a gate. The degree of
- * a vertex is the sum of the weights of its edges. Single-qubit gates and
- * non-unitary operations do not contribute.
+ * @brief Return the multi-qubit gate support count of every qubit
+ * @details A qubit's count increases once for every multi-qubit gate that acts
+ * on it. A gate that acts on k qubits contributes one unit to each of those k
+ * qubits. Single-qubit gates and non-unitary operations do not contribute.
  * @param circuit The circuit to inspect
  * @return The weighted degree of every qubit in physical qubit order
  */

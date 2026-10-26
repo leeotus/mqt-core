@@ -196,6 +196,20 @@ TEST(Reordering, SiftNeverIncreasesTheSize) {
   EXPECT_EQ(statistics.finalSize, root.size());
 }
 
+TEST(Reordering, ConstructionStatisticsIncludePeakWithoutReordering) {
+  const auto circuit = makeAsymmetricCircuit();
+  const auto numQubits = circuit.getNqubits();
+  auto package = std::make_unique<Package>(numQubits);
+
+  ConstructionStatistics statistics;
+  const auto root =
+      buildFunctionality(circuit, *package, ConstructionOptions{}, &statistics);
+
+  EXPECT_EQ(statistics.reorderings, 0U);
+  EXPECT_EQ(statistics.finalSize, root.size());
+  EXPECT_GE(statistics.peakSize, statistics.finalSize);
+}
+
 TEST(Reordering, DynamicConstructionTriggersReorderings) {
   const auto circuit = makeAsymmetricCircuit();
   const auto numQubits = circuit.getNqubits();
