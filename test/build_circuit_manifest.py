@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import re
 from pathlib import Path
 
 
@@ -48,9 +49,16 @@ def main() -> int:
         extension if extension.startswith(".") else f".{extension}"
         for extension in (args.extension or ["qasm", "qasm2", "qasm3"])
     }
+    qdirectories = sorted(
+        path
+        for path in args.circuit_directory.iterdir()
+        if path.is_dir() and re.fullmatch(r"q\d+", path.name)
+    )
+    search_roots = qdirectories or [args.circuit_directory]
     files = sorted(
         path
-        for path in args.circuit_directory.rglob("*")
+        for search_root in search_roots
+        for path in search_root.rglob("*")
         if path.is_file() and path.suffix.lower() in extensions
     )
     if not files:

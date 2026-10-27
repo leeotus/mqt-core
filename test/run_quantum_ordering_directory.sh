@@ -6,7 +6,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Run static variable-ordering experiments for every QASM file below a
-# directory. Each circuit and strategy is measured in a separate process.
+# directory. The seven ordering strategies of one circuit and DD mode run in
+# parallel. Results are appended to CSV after each circuit completes.
 #
 # Usage:
 #   bash test/run_quantum_ordering_directory.sh CIRCUIT_DIRECTORY [OUTPUT_DIRECTORY]
@@ -25,26 +26,44 @@ BUILD_DIR="${MQT_BUILD_DIR:-${ROOT}/build/release}"
 BENCH="${MQT_CORE_ORDER_BENCH:-${BUILD_DIR}/bin/mqt-core-order-bench}"
 REPS="${MQT_REPS:-1}"
 TIMEOUT_SEC="${MQT_TIMEOUT_SEC:-7200}"
-MEMORY_LIMIT_GB="${MQT_MEMORY_LIMIT_GB:-32}"
+TOTAL_MEMORY_LIMIT_GB="${MQT_MEMORY_LIMIT_GB:-32}"
+WORKER_MEMORY_LIMIT_GB_OVERRIDE="${MQT_WORKER_MEMORY_LIMIT_GB:-}"
 MAX_QUBITS="${MQT_MAX_QUBITS:-32}"
 JOBS="${MQT_BUILD_JOBS:-8}"
-MEMORY_LIMIT_KB=$((MEMORY_LIMIT_GB * 1024 * 1024))
 RAW="${OUT}/raw"
 DATA="${OUT}/data"
 MANIFEST="${OUT}/circuits_manifest.tsv"
+RESULTS="${DATA}/results.csv"
+FAILURES="${DATA}/failures.csv"
 PROGRESS_LOG="${OUT}/progress.log"
 STRATEGIES=(identity degree spectral recursive_bisection force mince quantum_score)
 MODES=(functionality state)
+
+# The memory limit is the total budget for one circuit/mode wave. Dividing it
+# between the seven simultaneously running strategies prevents a 7x overshoot.
+TOTAL_MEMORY_LIMIT_KB=$((TOTAL_MEMORY_LIMIT_GB * 1024 * 1024))
+if [[ -n "${WORKER_MEMORY_LIMIT_GB_OVERRIDE}" ]]; then
+  WORKER_MEMORY_LIMIT_KB=$(awk \
+    -v gb="${WORKER_MEMORY_LIMIT_GB_OVERRIDE}" \
+    'BEGIN { printf "%d", gb * 1024 * 1024 }')
+else
+  WORKER_MEMORY_LIMIT_KB=$((TOTAL_MEMORY_LIMIT_KB / ${#STRATEGIES[@]}))
+fi
+WORKER_MEMORY_LIMIT_GB=$(awk \
+  -v kb="${WORKER_MEMORY_LIMIT_KB}" \
+  'BEGIN { printf "%.2f", kb / 1024 / 1024 }')
 
 mkdir -p "${RAW}" "${DATA}"
 python3 "${ROOT}/test/build_circuit_manifest.py" \
   "${CIRCUIT_DIRECTORY}" "${MANIFEST}"
 python3 "${ROOT}/test/verify_quantum_corpus.py" "${MANIFEST}"
+
 CIRCUIT_COUNT=$(($(wc -l <"${MANIFEST}") - 1))
 TOTAL_JOBS=$((REPS * ${#MODES[@]} * CIRCUIT_COUNT * ${#STRATEGIES[@]}))
-printf 'experiments=%d files=%d timeout=%ss memory=%sGiB max-qubits=%d\n' \
-  "${TOTAL_JOBS}" "${CIRCUIT_COUNT}" "${TIMEOUT_SEC}" \
-  "${MEMORY_LIMIT_GB}" "${MAX_QUBITS}" | tee "${PROGRESS_LOG}"
+printf 'circuits=%d experiments=%d strategies=%d timeout=%ss total-memory=%sGiB worker-memory=%sGiB max-qubits=%d\n' \
+  "${CIRCUIT_COUNT}" "${TOTAL_JOBS}" "${#STRATEGIES[@]}" "${TIMEOUT_SEC}" \
+  "${TOTAL_MEMORY_LIMIT_GB}" "${WORKER_MEMORY_LIMIT_GB}" "${MAX_QUBITS}" |
+  tee "${PROGRESS_LOG}"
 
 if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   cmake -S "${ROOT}" -B "${BUILD_DIR}" \
@@ -54,94 +73,76 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
 fi
 cmake --build "${BUILD_DIR}" --target mqt-core-order-bench -j "${JOBS}"
 
-printf 'rep,circuit,mode,strategy,status,qubits,gates\n' >"${DATA}/failures.csv"
+printf 'rep,mode,circuit,benchmark,level,qubits,gates,strategy,final_nodes,peak_nodes,build_time_ms,order_time_ms,total_time_ms,peak_rss_mb,status\n' \
+  >"${RESULTS}"
+printf 'rep,mode,circuit,strategy,status\n' >"${FAILURES}"
 
+job_index=0
 for ((rep = 1; rep <= REPS; rep++)); do
-  mode_position=0
-  for mode in "${MODES[@]}"; do
-    raw_file="${RAW}/${mode}_rep${rep}.csv"
-    "${BENCH}" --header >"${raw_file}"
-    circuit_index=0
-    job_index=$((((rep - 1) * ${#MODES[@]} + mode_position) *
-      CIRCUIT_COUNT * ${#STRATEGIES[@]}))
+  circuit_index=0
+  while IFS= read -r path; do
+    ((circuit_index += 1))
+    circuit_name="$(basename "${path}")"
+    work_dir="$(mktemp -d "${RAW}/circuit.XXXXXX")"
+    circuit_start_ms=$(date +%s%3N)
 
-    tail -n +2 "${MANIFEST}" |
-      cut -f7 |
-      while IFS= read -r path; do
-        ((circuit_index += 1))
-        circuit_name="$(basename "${path}")"
-        for strategy in "${STRATEGIES[@]}"; do
-          ((job_index += 1))
-          job_start_ms=$(date +%s%3N)
-          printf -v progress \
-            '[%d/%d] rep=%d/%d mode=%s circuit=%d/%d strategy=%s file=%s starting' \
-            "${job_index}" "${TOTAL_JOBS}" "${rep}" "${REPS}" \
-            "${mode}" "${circuit_index}" "${CIRCUIT_COUNT}" \
-            "${strategy}" "${circuit_name}"
-          printf '%s\n' "${progress}" | tee -a "${PROGRESS_LOG}" >&2
-          order_variant="${strategy}"
-          if [[ "${strategy}" == "identity" ]]; then
-            order_variant="original"
-          fi
-          rc=0
-          error_log="${RAW}/last_error.log"
-          row="$(
-            ulimit -v "${MEMORY_LIMIT_KB}"
+    for mode in "${MODES[@]}"; do
+      mode_start_ms=$(date +%s%3N)
+      worker_pids=()
+      for strategy in "${STRATEGIES[@]}"; do
+        ((job_index += 1))
+        order_variant="${strategy}"
+        if [[ "${strategy}" == "identity" ]]; then
+          order_variant="original"
+        fi
+        printf '[%d/%d] rep=%d/%d mode=%s circuit=%d/%d strategy=%s file=%s starting\n' \
+          "${job_index}" "${TOTAL_JOBS}" "${rep}" "${REPS}" "${mode}" \
+          "${circuit_index}" "${CIRCUIT_COUNT}" "${strategy}" "${circuit_name}" |
+          tee -a "${PROGRESS_LOG}" >&2
+
+        (
+          set +e
+          (
+            ulimit -v "${WORKER_MEMORY_LIMIT_KB}"
             timeout --kill-after=30s "${TIMEOUT_SEC}" "${BENCH}" \
               --mode "${mode}" \
               --static-only \
               --only "${order_variant}" \
               --max-qubits "${MAX_QUBITS}" \
               "${path}"
-          )" 2>"${error_log}" || rc=$?
-          if ((rc != 0)); then
-            if ((rc == 124)); then
-              failure_status="timeout"
-            elif grep -Eqi \
-              'bad_alloc|bad array new length|cannot allocate memory|memory exhausted|out of memory' \
-              "${error_log}"; then
-              failure_status="memory-limit"
-            elif ((rc == 134 || rc == 137)); then
-              failure_status="memory-limit-or-killed"
-            else
-              failure_status="runtime-error-${rc}"
-            fi
-            printf '%s,%s,%s,%s,%s,-,-\n' \
-              "${rep}" "${circuit_name}" "${mode}" "${strategy}" \
-              "${failure_status}" >>"${DATA}/failures.csv"
-            elapsed_ms=$(($(date +%s%3N) - job_start_ms))
-            printf '[%d/%d] status=%s elapsed=%dms file=%s\n' \
-              "${job_index}" "${TOTAL_JOBS}" "${failure_status}" \
-              "${elapsed_ms}" "${circuit_name}" |
-              tee -a "${PROGRESS_LOG}" >&2
-            continue
-          fi
-          IFS=',' read -r -a fields <<<"${row}"
-          if [[ "${fields[3]:-missing_status}" != "ok" ]]; then
-            printf '%s,%s,%s,%s,%s,%s,%s\n' \
-              "${rep}" "${circuit_name}" "${mode}" "${strategy}" \
-              "${fields[3]:-missing_status}" "${fields[1]:--}" "${fields[2]:--}" \
-              >>"${DATA}/failures.csv"
-          fi
-          printf '%s\n' "${row}" >>"${raw_file}"
-          elapsed_ms=$(($(date +%s%3N) - job_start_ms))
-          printf '[%d/%d] status=%s elapsed=%dms file=%s\n' \
-            "${job_index}" "${TOTAL_JOBS}" "${fields[3]:-missing_status}" \
-            "${elapsed_ms}" "${circuit_name}" |
-            tee -a "${PROGRESS_LOG}" >&2
-        done
+          ) >"${work_dir}/${mode}.${strategy}.row" \
+            2>"${work_dir}/${mode}.${strategy}.err"
+          printf '%s\n' "$?" >"${work_dir}/${mode}.${strategy}.rc"
+        ) &
+        worker_pids+=("$!")
       done
-    mode_position=$((mode_position + 1))
-  done
+
+      for pid in "${worker_pids[@]}"; do
+        wait "${pid}"
+      done
+      elapsed_ms=$(($(date +%s%3N) - mode_start_ms))
+      printf '[%d/%d] completed mode=%s circuit=%d/%d elapsed=%dms file=%s\n' \
+        "${job_index}" "${TOTAL_JOBS}" "${mode}" "${circuit_index}" \
+        "${CIRCUIT_COUNT}" "${elapsed_ms}" "${circuit_name}" |
+        tee -a "${PROGRESS_LOG}" >&2
+    done
+
+    python3 "${ROOT}/test/append_quantum_ordering_results.py" \
+      "${MANIFEST}" \
+      --results "${RESULTS}" \
+      --failures "${FAILURES}" \
+      --work-dir "functionality=${work_dir}" \
+      --work-dir "state=${work_dir}" \
+      --rep "${rep}" \
+      --circuit "${circuit_name}"
+    elapsed_ms=$(($(date +%s%3N) - circuit_start_ms))
+    printf '[%d/%d] CSV updated circuit=%d/%d elapsed=%dms file=%s\n' \
+      "${job_index}" "${TOTAL_JOBS}" "${circuit_index}" \
+      "${CIRCUIT_COUNT}" "${elapsed_ms}" "${circuit_name}" |
+      tee -a "${PROGRESS_LOG}" >&2
+    rm -rf "${work_dir}"
+  done < <(tail -n +2 "${MANIFEST}" | cut -f7)
 done
 
-for mode in "${MODES[@]}"; do
-  python3 "${ROOT}/test/normalize_quantum_ordering.py" \
-    "${MANIFEST}" \
-    "${RAW}/${mode}"_rep*.csv \
-    "${DATA}/${mode}_full.csv" \
-    --mode "${mode}" \
-    --failures "${DATA}/failures.csv"
-done
-
-printf 'results written below %s\n' "${DATA}"
+printf 'results written to %s\n' "${RESULTS}"
+printf 'failures written to %s\n' "${FAILURES}"
