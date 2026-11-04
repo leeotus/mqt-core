@@ -354,7 +354,8 @@ int main(int argc, char** argv) {
             {"recursive_bisection", dd::OrderingStrategy::RecursiveBisection},
             {"force", dd::OrderingStrategy::Force},
             {"mince", dd::OrderingStrategy::Mince},
-            {"quantum_score", dd::OrderingStrategy::QuantumScore}};
+            {"quantum_score", dd::OrderingStrategy::QuantumScore},
+            {"rank_bisection", dd::OrderingStrategy::RankBisection}};
 
     struct StaticResult {
       std::string strategy;

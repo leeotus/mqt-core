@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Run static variable-ordering experiments for every QASM file below a
-# directory. The seven ordering strategies of one circuit and DD mode run in
+# directory. The eight ordering strategies of one circuit and DD mode run in
 # parallel. Results are appended to CSV after each circuit completes.
 #
 # Usage:
@@ -36,7 +36,7 @@ MANIFEST="${OUT}/circuits_manifest.tsv"
 RESULTS="${DATA}/results.csv"
 FAILURES="${DATA}/failures.csv"
 PROGRESS_LOG="${OUT}/progress.log"
-STRATEGIES=(identity degree spectral recursive_bisection force mince quantum_score)
+STRATEGIES=(identity degree spectral recursive_bisection rank_bisection force mince quantum_score)
 MODES=(functionality state)
 
 # The memory limit is the total budget for one circuit/mode wave. Dividing it

@@ -21,6 +21,7 @@ STRATEGIES = {
     "degree": (7, 8, 9, 10),
     "spectral": (11, 12, 13, 14),
     "recursive_bisection": (15, 16, 17, 18),
+    "rank_bisection": (31, 32, 33, 34),
     "force": (19, 20, 21, 22),
     "mince": (23, 24, 25, 26),
     "quantum_score": (27, 28, 29, 30),
@@ -92,7 +93,11 @@ def classify_failure(return_code: int, error_path: Path) -> str:
     """
     if return_code == 124:
         return "timeout"
-    error = error_path.read_text(errors="replace") if error_path.is_file() else ""
+    error = (
+        error_path.read_text(encoding="utf-8", errors="replace")
+        if error_path.is_file()
+        else ""
+    )
     if MEMORY_ERROR.search(error):
         return "memory-limit"
     if return_code in {134, 137}:
@@ -167,6 +172,10 @@ def result_row(
         return values, True
 
     node_index, peak_index, build_index, order_index = STRATEGIES[strategy]
+    if order_index is not None and len(row) <= order_index:
+        # Older benchmark binaries wrote fewer strategy columns.
+        values["status"] = "missing-strategy-result"
+        return values, True
     nodes = row[node_index]
     if not nodes:
         values["status"] = "missing-strategy-result"

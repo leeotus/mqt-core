@@ -19,6 +19,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -473,16 +474,18 @@ quantumScoreOrder(const QuantumOrderingProblem& problem) {
 }
 
 /**
- * @brief Recursively bisect a vertex set and append the resulting level order
+ * @brief Order a vertex set by the Fiedler vector of its induced subgraph
+ * @details Degenerate Fiedler vectors, which occur when the subgraph has no
+ * usable spectral structure, fall back to the weighted degree order. The
+ * function is shared by the fixed-split and the rank-guided bisection so that
+ * the two strategies differ only in the split point.
+ * @param graph The weighted interaction graph
+ * @param vertices The vertex set to order
+ * @return The vertices in the order induced by the Fiedler vector
  */
-void bisect(const InteractionGraph& graph,
-            const std::vector<std::size_t>& vertices,
-            std::vector<std::size_t>& order) {
-  if (vertices.size() <= 1U) {
-    order.insert(order.end(), vertices.begin(), vertices.end());
-    return;
-  }
-
+[[nodiscard]] std::vector<std::size_t>
+fiedlerOrder(const InteractionGraph& graph,
+             const std::vector<std::size_t>& vertices) {
   const auto fiedler = fiedlerVector(graph, vertices);
   std::vector<std::pair<double, std::size_t>> keyed;
   keyed.reserve(vertices.size());
@@ -499,22 +502,162 @@ void bisect(const InteractionGraph& graph,
   }
   std::ranges::sort(keyed, {}, &std::pair<double, std::size_t>::first);
 
-  const auto mid = keyed.size() / 2U;
-  std::vector<std::size_t> left;
-  std::vector<std::size_t> right;
-  left.reserve(mid);
-  right.reserve(keyed.size() - mid);
-  for (std::size_t i = 0U; i < mid; ++i) {
-    left.emplace_back(keyed[i].second);
+  std::vector<std::size_t> sorted;
+  sorted.reserve(keyed.size());
+  for (const auto& [value, qubit] : keyed) {
+    sorted.emplace_back(qubit);
   }
-  for (std::size_t i = mid; i < keyed.size(); ++i) {
-    right.emplace_back(keyed[i].second);
+  return sorted;
+}
+
+/**
+ * @brief Recursively bisect a vertex set and append the resulting level order
+ */
+void bisect(const InteractionGraph& graph,
+            const std::vector<std::size_t>& vertices,
+            std::vector<std::size_t>& order) {
+  if (vertices.size() <= 1U) {
+    order.insert(order.end(), vertices.begin(), vertices.end());
+    return;
   }
+
+  const auto sorted = fiedlerOrder(graph, vertices);
+  const auto mid = sorted.size() / 2U;
+  std::vector<std::size_t> left(
+      sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(mid));
+  std::vector<std::size_t> right(
+      sorted.begin() + static_cast<std::ptrdiff_t>(mid), sorted.end());
 
   std::vector<std::size_t> leftOrder;
   std::vector<std::size_t> rightOrder;
   bisect(graph, left, leftOrder);
   bisect(graph, right, rightOrder);
+
+  if (!leftOrder.empty() && !rightOrder.empty()) {
+    const auto boundary = leftOrder.back();
+    const auto connectFront = graph.weight[boundary][rightOrder.front()];
+    const auto connectBack = graph.weight[boundary][rightOrder.back()];
+    if (connectBack > connectFront) {
+      std::ranges::reverse(rightOrder);
+    }
+  }
+
+  order.insert(order.end(), leftOrder.begin(), leftOrder.end());
+  order.insert(order.end(), rightOrder.begin(), rightOrder.end());
+}
+
+/**
+ * @brief Compute the rank of a binary matrix over GF(2)
+ * @details The rows are packed into 64-bit words and reduced by Gaussian
+ * elimination with row pivoting.
+ * @param rows The rows, each packed into words
+ * @param columns The number of columns
+ * @return The rank over GF(2)
+ */
+[[nodiscard]] std::size_t gf2Rank(std::vector<std::vector<std::uint64_t>> rows,
+                                  const std::size_t columns) {
+  std::size_t rank = 0U;
+  for (std::size_t column = 0U; column < columns; ++column) {
+    if (rank >= rows.size()) {
+      break;
+    }
+    const auto word = column / 64U;
+    const auto bit = column % 64U;
+    std::size_t pivot = rank;
+    while (pivot < rows.size() && ((rows[pivot][word] >> bit) & 1ULL) == 0ULL) {
+      ++pivot;
+    }
+    if (pivot == rows.size()) {
+      continue;
+    }
+    std::swap(rows[rank], rows[pivot]);
+    for (std::size_t row = 0U; row < rows.size(); ++row) {
+      if (row == rank || ((rows[row][word] >> bit) & 1ULL) == 0ULL) {
+        continue;
+      }
+      for (std::size_t w = 0U; w < rows[row].size(); ++w) {
+        rows[row][w] ^= rows[rank][w];
+      }
+    }
+    ++rank;
+  }
+  return rank;
+}
+
+/**
+ * @brief Compute the cut rank of a split of a vertex sequence
+ * @details The cut rank is the rank over GF(2) of the adjacency block between
+ * the first @p split vertices and the remaining vertices. An edge is present
+ * when the interaction weight is positive. The function follows the cut-rank
+ * definition used for rank-width, which ignores edge multiplicities.
+ * @param graph The weighted interaction graph
+ * @param vertices The vertex sequence that defines the split
+ * @param split The number of vertices on the left side; must be in [1, n-1]
+ * @return The cut rank
+ */
+[[nodiscard]] std::size_t cutRank(const InteractionGraph& graph,
+                                  const std::vector<std::size_t>& vertices,
+                                  const std::size_t split) {
+  const auto rightSize = vertices.size() - split;
+  const auto words = (rightSize + 63U) / 64U;
+  std::vector<std::vector<std::uint64_t>> rows(
+      split, std::vector<std::uint64_t>(words, 0ULL));
+  for (std::size_t i = 0U; i < split; ++i) {
+    const auto left = vertices[i];
+    for (std::size_t j = 0U; j < rightSize; ++j) {
+      const auto right = vertices[split + j];
+      if (graph.weight[left][right] > 0.0) {
+        rows[i][j / 64U] |= (1ULL << (j % 64U));
+      }
+    }
+  }
+  return gf2Rank(std::move(rows), rightSize);
+}
+
+/**
+ * @brief Recursively bisect a vertex set by minimizing the cut rank
+ * @details The vertex set is ordered by the Fiedler vector, exactly as in
+ * @ref bisect. Every split point of that order is evaluated, and the point
+ * with the smallest cut rank is used. Ties are broken by the distance to the
+ * middle of the order, so a graph without usable structure reproduces the
+ * fixed-split result.
+ * @param graph The weighted interaction graph
+ * @param vertices The vertex set to bisect
+ * @param order The resulting level order, appended in place
+ */
+void rankBisect(const InteractionGraph& graph,
+                const std::vector<std::size_t>& vertices,
+                std::vector<std::size_t>& order) {
+  if (vertices.size() <= 1U) {
+    order.insert(order.end(), vertices.begin(), vertices.end());
+    return;
+  }
+
+  const auto sorted = fiedlerOrder(graph, vertices);
+  const auto middle = sorted.size() / 2U;
+  auto bestSplit = middle;
+  auto bestRank = std::numeric_limits<std::size_t>::max();
+  const auto distance = [middle](const std::size_t value) {
+    return value > middle ? value - middle : middle - value;
+  };
+  for (std::size_t split = 1U; split < sorted.size(); ++split) {
+    const auto current = cutRank(graph, sorted, split);
+    if (current < bestRank ||
+        (current == bestRank && distance(split) < distance(bestSplit))) {
+      bestRank = current;
+      bestSplit = split;
+    }
+  }
+
+  std::vector<std::size_t> left(
+      sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(bestSplit));
+  std::vector<std::size_t> right(
+      sorted.begin() + static_cast<std::ptrdiff_t>(bestSplit), sorted.end());
+
+  std::vector<std::size_t> leftOrder;
+  std::vector<std::size_t> rightOrder;
+  rankBisect(graph, left, leftOrder);
+  rankBisect(graph, right, rightOrder);
 
   if (!leftOrder.empty() && !rightOrder.empty()) {
     const auto boundary = leftOrder.back();
@@ -840,6 +983,12 @@ qc::Permutation computeVariableOrder(const qc::QuantumComputation& circuit,
     bisect(graph, vertices, order);
     break;
   }
+  case OrderingStrategy::RankBisection: {
+    std::vector<std::size_t> vertices(numQubits);
+    std::iota(vertices.begin(), vertices.end(), 0U);
+    rankBisect(graph, vertices, order);
+    break;
+  }
   case OrderingStrategy::Force: {
     order = forceOrder(problem);
     break;
@@ -874,6 +1023,8 @@ const char* toString(const OrderingStrategy strategy) {
     return "spectral";
   case OrderingStrategy::RecursiveBisection:
     return "recursive-bisection";
+  case OrderingStrategy::RankBisection:
+    return "rank-bisection";
   case OrderingStrategy::Force:
     return "force";
   case OrderingStrategy::Mince:

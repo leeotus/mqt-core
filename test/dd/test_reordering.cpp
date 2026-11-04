@@ -253,6 +253,39 @@ TEST(Reordering, DynamicConstructionPreservesTheUnitary) {
   }
 }
 
+TEST(Reordering, DynamicConstructionPreservesTheUnitaryWithInitialLayout) {
+  auto circuit = makeAsymmetricCircuit();
+  const auto numQubits = circuit.getNqubits();
+  const auto initial =
+      computeVariableOrder(circuit, OrderingStrategy::Spectral);
+  circuit.initialLayout = initial;
+  circuit.outputPermutation = initial;
+
+  auto referencePackage = std::make_unique<Package>(numQubits);
+  const auto referenceMatrix =
+      buildFunctionality(circuit, *referencePackage).getMatrix(numQubits);
+
+  auto package = std::make_unique<Package>(numQubits);
+  ConstructionOptions options;
+  options.dynamic.enabled = true;
+  options.dynamic.initialThreshold = 4U;
+  ConstructionStatistics statistics;
+  const auto root = buildFunctionality(circuit, *package, options, &statistics);
+  const auto matrix = root.getMatrix(numQubits);
+
+  for (std::size_t i = 0U; i < numQubits; ++i) {
+    for (std::size_t j = 0U; j < numQubits; ++j) {
+      const auto referenceRow = levelIndex(i, initial, numQubits);
+      const auto referenceCol = levelIndex(j, initial, numQubits);
+      const auto dynamicRow = levelIndex(i, statistics.finalLayout, numQubits);
+      const auto dynamicCol = levelIndex(j, statistics.finalLayout, numQubits);
+      EXPECT_NEAR(std::abs(matrix[dynamicRow][dynamicCol] -
+                           referenceMatrix[referenceRow][referenceCol]),
+                  0.0, 1e-9);
+    }
+  }
+}
+
 TEST(Reordering, DynamicConstructionPreservesTheStateVector) {
   const auto circuit = makeAsymmetricCircuit();
   const auto numQubits = circuit.getNqubits();

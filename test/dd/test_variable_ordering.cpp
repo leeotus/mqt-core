@@ -33,10 +33,11 @@ using namespace dd;
 
 namespace {
 
-constexpr std::array<OrderingStrategy, 6> NON_DEFAULT_STRATEGIES{
+constexpr std::array<OrderingStrategy, 7> NON_DEFAULT_STRATEGIES{
     OrderingStrategy::Degree,
     OrderingStrategy::Spectral,
     OrderingStrategy::RecursiveBisection,
+    OrderingStrategy::RankBisection,
     OrderingStrategy::Force,
     OrderingStrategy::Mince,
     OrderingStrategy::QuantumScore};
@@ -162,6 +163,36 @@ TEST(VariableOrdering, EveryStrategyReturnsABijection) {
       EXPECT_TRUE(level) << toString(strategy);
     }
   }
+}
+
+TEST(VariableOrdering, RankBisectionKeepsDisconnectedComponentsTogether) {
+  QuantumComputation qc(4);
+  qc.cx(0, 1);
+  qc.cx(2, 3);
+  const auto permutation =
+      computeVariableOrder(qc, OrderingStrategy::RankBisection);
+  ASSERT_EQ(permutation.size(), 4U);
+  const auto distance = [](const std::size_t a, const std::size_t b) {
+    return a > b ? a - b : b - a;
+  };
+  // Every split inside a connected component has positive cut rank, so the
+  // strategy must split between the two components.
+  EXPECT_EQ(distance(permutation.at(0), permutation.at(1)), 1U);
+  EXPECT_EQ(distance(permutation.at(2), permutation.at(3)), 1U);
+  EXPECT_STREQ(toString(OrderingStrategy::RankBisection), "rank-bisection");
+}
+
+TEST(VariableOrdering,
+     RankBisectionFallsBackToTheFixedSplitWhenEveryCutHasRankZero) {
+  QuantumComputation qc(4);
+  qc.h(0);
+  qc.h(1);
+  qc.h(2);
+  qc.h(3);
+  // Without interaction edges every cut rank is zero, so the tie-break must
+  // reproduce the fixed midpoint split.
+  EXPECT_EQ(computeVariableOrder(qc, OrderingStrategy::RankBisection),
+            computeVariableOrder(qc, OrderingStrategy::RecursiveBisection));
 }
 
 TEST(VariableOrdering, ForceKeepsAnAlreadyContiguousChain) {

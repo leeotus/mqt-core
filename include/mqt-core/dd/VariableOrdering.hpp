@@ -41,6 +41,12 @@ enum class OrderingStrategy : std::uint8_t {
   Spectral,
   /// Recursively bisect the interaction graph to keep related qubits adjacent.
   RecursiveBisection,
+  /// Recursively bisect the interaction graph, but choose every split point as
+  /// the one whose cut rank over GF(2) is smallest.
+  /// @details The cut rank of a split is the rank of the adjacency block
+  /// between the two parts. Minimizing it is the greedy counterpart of
+  /// minimizing the linear rank-width of the interaction graph.
+  RankBisection,
   /// FORCE: repeatedly place every qubit at the center of gravity of the
   /// multi-qubit gates that contain it.
   /// @see Aloul, Markov, Sakallah, "FORCE: a fast and easy-to-implement
