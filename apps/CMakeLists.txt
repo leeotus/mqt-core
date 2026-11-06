@@ -18,7 +18,11 @@ target_link_libraries(mqt-core-order-check PRIVATE MQT::CoreDD MQT::CoreQASM)
 add_executable(mqt-core-dump-unitary dump_unitary.cpp)
 target_link_libraries(mqt-core-dump-unitary PRIVATE MQT::CoreDD MQT::CoreQASM)
 
+add_executable(mqt-core-qst-probe qst_probe.cpp)
+target_link_libraries(mqt-core-qst-probe PRIVATE MQT::CoreDD MQT::CoreIR)
+
 # Keep the binaries in a predictable place for the experiment scripts.
 set_target_properties(
   mqt-core-order-bench mqt-core-order-check mqt-core-dump-unitary
+  mqt-core-qst-probe
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
