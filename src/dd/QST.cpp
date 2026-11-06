@@ -103,10 +103,13 @@ CVec projectorVector(const std::size_t nQubits,
                                    : CVec::value_type{0.0, -invSqrt2};
       break;
     }
+    // Qubit 0 must end up in the least significant bit so that the index
+    // matches the outcome encoding used by sample(). Each new qubit takes the
+    // most significant position, so the last qubit ends up on top.
     CVec product(2U * result.size(), {0.0, 0.0});
     for (std::size_t i = 0U; i < result.size(); ++i) {
-      product[2U * i] = result[i] * single[0];
-      product[2U * i + 1U] = result[i] * single[1];
+      product[i] = result[i] * single[0];
+      product[result.size() + i] = result[i] * single[1];
     }
     result = std::move(product);
   }

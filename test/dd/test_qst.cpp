@@ -197,3 +197,50 @@ TEST(QST, ReconstructsBellState) {
   dd.decRef(rhoTrue);
   dd.garbageCollect();
 }
+
+/// bits[q] must be the outcome of qubit q. The GHZ state is symmetric and
+/// cannot detect a reversed order, so this test uses |01> instead.
+TEST(QST, OutcomeBitsFollowQubitIndex) {
+  Package dd(2);
+  qc::QuantumComputation circuit(2);
+  circuit.x(1);
+  auto rho = QST::densityMatrix(dd, circuit);
+
+  const auto zz = makeBasis("ZZ");
+  EXPECT_NEAR(QST::probability(dd, rho, zz, {0, 1}), 1.0, TOLERANCE);
+  EXPECT_NEAR(QST::probability(dd, rho, zz, {1, 0}), 0.0, TOLERANCE);
+
+  dd.decRef(rho);
+  dd.garbageCollect();
+}
+
+/// A state without permutation symmetry would keep only half of its overlap
+/// if the projector index and the outcome encoding disagreed.
+TEST(QST, ReconstructsAsymmetricState) {
+  Package dd(2);
+  qc::QuantumComputation circuit(2);
+  circuit.ry(0.7, 0);
+  circuit.cx(0, 1);
+  circuit.ry(0.9, 1);
+  auto rhoTrue = QST::densityMatrix(dd, circuit);
+  const auto bases = QST::allPauliBases(2);
+
+  QST::Config config;
+  config.shotsPerBasis = 4000U;
+  config.maxIterations = 300U;
+  config.tolerance = 1e-10;
+  config.seed = 7U;
+
+  const auto records =
+      QST::sample(dd, rhoTrue, bases, config.shotsPerBasis, config.seed);
+  auto result = QST::reconstruct(dd, records, bases, config);
+  ASSERT_FALSE(result.rhoMatrix.empty());
+  const auto trueMatrix = rhoTrue.getMatrix(2);
+  EXPECT_NEAR(matrixOverlap(trueMatrix, result.rhoMatrix), 1.0, 2e-2);
+
+  if (result.rho.p != nullptr) {
+    dd.decRef(result.rho);
+  }
+  dd.decRef(rhoTrue);
+  dd.garbageCollect();
+}

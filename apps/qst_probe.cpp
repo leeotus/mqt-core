@@ -15,13 +15,19 @@
  * reconstruction, and prints one CSV line.
  *
  * Usage:
- *   mqt-core-qst-probe [--state zero|ghz|random] [--qubits N] [--shots S]
- *                      [--iterations I] [--random-bases K] [--seed SEED]
+ *   mqt-core-qst-probe [--state zero|ghz|random] [--circuit FILE.qasm]
+ *                      [--qubits N] [--shots S] [--iterations I]
+ *                      [--random-bases K] [--seed SEED]
+ *
+ * With --circuit the state comes from the given OpenQASM file; final
+ * measurements are removed because the density matrix is built from the
+ * unitary part only.
  */
 
 #include "dd/Package.hpp"
 #include "dd/QST.hpp"
 #include "ir/QuantumComputation.hpp"
+#include "qasm3/Importer.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -34,6 +40,7 @@ namespace {
 
 struct Options {
   std::string state = "ghz";
+  std::string circuitPath;
   std::size_t qubits = 2U;
   std::size_t shots = 2000U;
   std::size_t iterations = 200U;
@@ -86,12 +93,14 @@ int main(int argc, char** argv) {
       options.iterations = std::stoul(argv[++i]);
     } else if (argument == "--random-bases" && i + 1 < argc) {
       options.randomBases = std::stoul(argv[++i]);
+    } else if (argument == "--circuit" && i + 1 < argc) {
+      options.circuitPath = argv[++i];
     } else if (argument == "--seed" && i + 1 < argc) {
       options.seed = std::stoul(argv[++i]);
     } else if (argument == "-h" || argument == "--help") {
-      std::printf("usage: %s [--state zero|ghz|random] [--qubits N] "
-                  "[--shots S] [--iterations I] [--random-bases K] "
-                  "[--seed SEED]\n",
+      std::printf("usage: %s [--state zero|ghz|random] [--circuit FILE.qasm] "
+                  "[--qubits N] [--shots S] [--iterations I] "
+                  "[--random-bases K] [--seed SEED]\n",
                   argv[0]);
       return 0;
     } else {
@@ -99,12 +108,30 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
-  if (options.qubits == 0U || options.qubits > 20U) {
-    std::fprintf(stderr, "the number of qubits must be in [1, 20]\n");
+
+  qc::QuantumComputation circuit;
+  if (!options.circuitPath.empty()) {
+    try {
+      circuit = qasm3::Importer::importf(options.circuitPath);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "cannot read %s: %s\n", options.circuitPath.c_str(),
+                   error.what());
+      return 2;
+    }
+    circuit.removeFinalMeasurements();
+    options.qubits = circuit.getNqubits();
+    options.state = "qasm";
+  } else {
+    circuit = prepareCircuit(options);
+  }
+
+  // The dense path needs a full 4^n matrix, so the width is bounded by memory.
+  if (options.qubits == 0U || options.qubits > 15U) {
+    std::fprintf(stderr, "QST supports 1 to 15 qubits, got %zu\n",
+                 options.qubits);
     return 2;
   }
 
-  auto circuit = prepareCircuit(options);
   dd::Package dd(options.qubits);
   auto rhoTrue = dd::QST::densityMatrix(dd, circuit);
 
@@ -138,6 +165,8 @@ int main(int argc, char** argv) {
     purity = dd::QST::purity(dd, result.rho, options.qubits);
   }
 
+  std::fprintf(stderr, "true_purity=%.6f\n",
+               dd::QST::purity(dd, rhoTrue, options.qubits));
   std::printf("state,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,"
               "converged\n");
   std::printf("%s,%zu,%zu,%zu,%zu,%.6f,%.6f,%zu,%.3f,%d\n",

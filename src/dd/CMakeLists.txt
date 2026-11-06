@@ -28,6 +28,23 @@ if(NOT TARGET ${MQT_CORE_TARGET_NAME}-dd)
     PUBLIC MQT::CoreIR
     PRIVATE $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>)
 
+  # The dense matrix MLE in QST benefits from a fast BLAS and from thread
+  # parallelism. Both are optional: without them the code falls back to the
+  # scalar loops.
+  find_library(MQT_CORE_BLAS_LIBRARY NAMES blas openblas libblas.so.3)
+  if(MQT_CORE_BLAS_LIBRARY)
+    target_link_libraries(${MQT_CORE_TARGET_NAME}-dd PRIVATE ${MQT_CORE_BLAS_LIBRARY})
+    target_compile_definitions(${MQT_CORE_TARGET_NAME}-dd PRIVATE MQT_CORE_QST_USE_BLAS)
+    message(STATUS "QST: using BLAS at ${MQT_CORE_BLAS_LIBRARY}")
+  endif()
+
+  find_package(OpenMP QUIET)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(${MQT_CORE_TARGET_NAME}-dd PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(${MQT_CORE_TARGET_NAME}-dd PRIVATE MQT_CORE_QST_USE_OPENMP)
+    message(STATUS "QST: using OpenMP")
+  endif()
+
   # generate export header
   include(GenerateExportHeader)
   generate_export_header(${MQT_CORE_TARGET_NAME}-dd BASE_NAME mqt_core_dd)

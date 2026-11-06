@@ -1,196 +1,188 @@
-[![PyPI](https://img.shields.io/pypi/v/mqt.core?logo=pypi&style=flat-square)](https://pypi.org/project/mqt.core/)
-![OS](https://img.shields.io/badge/os-linux%20%7C%20macos%20%7C%20windows-blue?style=flat-square)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-[![DOI](https://img.shields.io/badge/JOSS-10.21105/joss.07478-blue.svg?style=flat-square)](https://doi.org/10.21105/joss.07478)
-[![CI](https://img.shields.io/github/actions/workflow/status/munich-quantum-toolkit/core/ci.yml?branch=v3.x&style=flat-square&logo=github&label=ci)](https://github.com/munich-quantum-toolkit/core/actions/workflows/ci.yml?query=branch%3Av3.x)
-[![CD](https://img.shields.io/github/actions/workflow/status/munich-quantum-toolkit/core/cd.yml?style=flat-square&logo=github&label=cd)](https://github.com/munich-quantum-toolkit/core/actions/workflows/cd.yml)
-[![Documentation](https://img.shields.io/readthedocs/mqt-core?logo=readthedocs&style=flat-square)](https://mqt.readthedocs.io/projects/core)
-[![codecov](https://img.shields.io/codecov/c/github/munich-quantum-toolkit/core/v3.x?style=flat-square&logo=codecov)](https://codecov.io/gh/munich-quantum-toolkit/core/branch/v3.x)
+# MQT Core — QST experiment build and run notes
 
-<p align="center">
-  <a href="https://mqt.readthedocs.io">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/munich-quantum-toolkit/.github/refs/heads/main/docs/_static/logo-mqt-dark.svg" width="60%">
-      <img src="https://raw.githubusercontent.com/munich-quantum-toolkit/.github/refs/heads/main/docs/_static/logo-mqt-light.svg" width="60%" alt="MQT Logo">
-    </picture>
-  </a>
-</p>
+This branch adds a maximum-likelihood quantum state tomography (QST) module
+(`include/mqt-core/dd/QST.hpp`, `src/dd/QST.cpp`) plus a command line probe.
+It rebuilds an n-qubit density matrix from Pauli-basis measurement records with
+the dilute MLE iteration `R = sum (f/p) Pi`, `rho <- R rho R / Tr(R rho R)`.
 
-# MQT Core - The Backbone of the Munich Quantum Toolkit (MQT)
+## Requirements
 
-MQT Core is an open-source C++20 and Python library for quantum computing that
-forms the backbone of the quantum software tools developed as part of the
-[_Munich Quantum Toolkit (MQT)_](https://mqt.readthedocs.io).
+- CMake 3.24+
+- a C++20 compiler
+- Linux (the batch script reads `/proc/<pid>/status` for the memory limit)
+- optionally OpenMP and BLAS; both are detected at configure time and the code
+  falls back to scalar loops when they are missing
 
-<p align="center">
-  <a href="https://mqt.readthedocs.io/projects/core">
-  <img width=30% src="https://img.shields.io/badge/documentation-blue?style=for-the-badge&logo=read%20the%20docs" alt="Documentation" />
-  </a>
-</p>
+## Build
 
-## Key Features
-
-- Fully fledged intermediate representation (IR) for quantum computations.
-- A state-of-the-art decision diagram (DD) package for quantum computing.
-
-If you have any questions, feel free to create a
-[discussion](https://github.com/munich-quantum-toolkit/core/discussions) or an
-[issue](https://github.com/munich-quantum-toolkit/core/issues) on
-[GitHub](https://github.com/munich-quantum-toolkit/core).
-
-## Contributors and Supporters
-
-MQT Core is developed by the
-[Chair for Design Automation](https://www.cda.cit.tum.de/) at the
-[Technical University of Munich](https://www.tum.de/) and [MQSC](https://mq.sc).
-Among others, it is part of the
-[Munich Quantum Software Stack (MQSS)](https://www.munich-quantum-valley.de/research/research-areas/mqss)
-ecosystem, which is being developed as part of the
-[Munich Quantum Valley (MQV)](https://www.munich-quantum-valley.de) initiative.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/munich-quantum-toolkit/.github/refs/heads/main/docs/_static/mqt-logo-banner-dark.svg" width="90%">
-    <img src="https://raw.githubusercontent.com/munich-quantum-toolkit/.github/refs/heads/main/docs/_static/mqt-logo-banner-light.svg" width="90%" alt="MQT Partner Logos">
-  </picture>
-</p>
-
-Thank you to all the contributors who have helped make MQT Core a reality!
-
-<p align="center">
-  <a href="https://github.com/munich-quantum-toolkit/core/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=munich-quantum-toolkit/core" alt="Contributors to munich-quantum-toolkit/core" />
-  </a>
-</p>
-
-The MQT will remain free, open-source, and permissively licensed — now and in
-the future. We are firmly committed to keeping it open and actively maintained
-for the quantum computing community.
-
-To support this endeavor, please consider:
-
-- Starring and sharing our repositories:
-  <https://github.com/munich-quantum-toolkit>
-- Contributing code, documentation, tests, or examples via issues and pull
-  requests
-- Citing the MQT in your publications (see [Cite This](#cite-this))
-- Citing our research in your publications (see
-  [References](https://mqt.readthedocs.io/projects/core/en/stable/references.html))
-- Using the MQT in research and teaching, and sharing feedback and use cases
-- Sponsoring us on GitHub: <https://github.com/sponsors/munich-quantum-toolkit>
-
-<p align="center">
-  <a href="https://github.com/sponsors/munich-quantum-toolkit">
-  <img width=20% src="https://img.shields.io/badge/Sponsor-white?style=for-the-badge&logo=githubsponsors&labelColor=black&color=blue" alt="Sponsor the MQT" />
-  </a>
-</p>
-
-## Getting Started
-
-`mqt.core` is available via [PyPI](https://pypi.org/project/mqt.core/).
-
-```console
-uv pip install mqt.core
+```bash
+cmake --preset release
+cmake --build --preset release
 ```
 
-The following code gives an example on the usage:
+Build only the two targets needed for the experiments:
 
-```python3
-from mqt.core.ir import QuantumComputation
-
-qc = QuantumComputation(2, 2)
-qc.h(0)
-qc.cx(0, 1)
-qc.measure(range(2), range(2))
-
-print(qc)
+```bash
+cmake --build build/release --target mqt-core-qst-probe mqt-core-dd-test -j 8
 ```
 
-**Detailed documentation and examples are available at
-[ReadTheDocs](https://mqt.readthedocs.io/projects/core).**
+For a debug build, replace `release` with `debug` everywhere.
 
-## System Requirements
+## Test
 
-Building the project requires a C++ compiler with support for C++20 and CMake
-3.24 or newer. For details on how to build the project, please refer to the
-[documentation](https://mqt.readthedocs.io/projects/core). Building (and
-running) is continuously tested under Linux, macOS, and Windows using the
-[latest available system versions for GitHub Actions](https://github.com/actions/runner-images).
-MQT Core is compatible with all
-[officially supported Python versions](https://devguide.python.org/versions/).
-
-The project relies on some external dependencies:
-
-- [nlohmann/json](https://github.com/nlohmann/json):
-  A JSON library for modern C++.
-- [google/googletest](https://github.com/google/googletest):
-  A testing framework for C++ (only used in tests).
-
-CMake will automatically look for installed versions of these libraries. If it
-does not find them, they will be fetched automatically at configure time via the
-[FetchContent](https://cmake.org/cmake/help/latest/module/FetchContent.html)
-module (check out the documentation for more information on how to customize
-this behavior).
-
-It is recommended (although not required) to have
-[GraphViz](https://www.graphviz.org) installed for visualization purposes.
-
-## Cite This
-
-Please cite the work that best fits your use case.
-
-### MQT Core (the tool)
-
-When citing the software itself or results produced with it, cite the MQT Core
-paper:
-
-```bibtex
-@article{burgholzer2025MQTCore,
-  title        = {{{MQT Core}}: {{The}} Backbone of the {{Munich Quantum Toolkit (MQT)}}},
-  author       = {Burgholzer, Lukas and Stade, Yannick and Peham, Tom and Wille, Robert},
-  year         = 2025,
-  journal      = {Journal of Open Source Software},
-  publisher    = {The Open Journal},
-  volume       = 10,
-  number       = 108,
-  pages        = 7478,
-  doi          = {10.21105/joss.07478},
-  url          = {https://doi.org/10.21105/joss.07478}
-}
+```bash
+./build/release/test/dd/mqt-core-dd-test --gtest_filter='QST.*'
 ```
 
-### The Munich Quantum Toolkit (the project)
+## Run the probe
 
-When discussing the overall MQT project or its ecosystem, cite the MQT Handbook:
+Synthetic states (`zero`, `ghz`, `random`):
 
-```bibtex
-@inproceedings{mqt,
-  title        = {The {{MQT}} Handbook: {{A}} Summary of Design Automation Tools and Software for Quantum Computing},
-  shorttitle   = {{The MQT Handbook}},
-  author       = {Wille, Robert and Berent, Lucas and Forster, Tobias and Kunasaikaran, Jagatheesan and Mato, Kevin and Peham, Tom and Quetschlich, Nils and Rovara, Damian and Sander, Aaron and Schmid, Ludwig and Schoenberger, Daniel and Stade, Yannick and Burgholzer, Lukas},
-  year         = 2024,
-  booktitle    = {IEEE International Conference on Quantum Software (QSW)},
-  doi          = {10.1109/QSW62656.2024.00013},
-  eprint       = {2405.17543},
-  eprinttype   = {arxiv},
-  addendum     = {A live version of this document is available at \url{https://mqt.readthedocs.io}}
-}
+```bash
+./build/release/bin/mqt-core-qst-probe \
+    --state ghz --qubits 8 \
+    --shots 1000 --random-bases 50 --iterations 100
 ```
 
----
+Circuit from an OpenQASM 2.0 or 3.0 file (final measurements are dropped, the
+qubit count comes from the circuit):
 
-## Acknowledgements
+```bash
+./build/release/bin/mqt-core-qst-probe \
+    --circuit /home/flareon/workshop/quantum_circuits/q10/adder_n10.qasm \
+    --shots 1000 --random-bases 50 --iterations 50
+```
 
-The Munich Quantum Toolkit has been supported by the European Research Council
-(ERC) under the European Union's Horizon 2020 research and innovation program
-(grant agreement No. 101001318), the Bavarian State Ministry for Science and
-Arts through the Distinguished Professorship Program, as well as the Munich
-Quantum Valley, which is supported by the Bavarian state government with funds
-from the Hightech Agenda Bayern Plus.
+Probe options:
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/munich-quantum-toolkit/.github/refs/heads/main/docs/_static/mqt-funding-footer-dark.svg" width="90%">
-    <img src="https://raw.githubusercontent.com/munich-quantum-toolkit/.github/refs/heads/main/docs/_static/mqt-funding-footer-light.svg" width="90%" alt="MQT Funding Footer">
-  </picture>
-</p>
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--state` | `ghz` | `zero`, `ghz`, or `random` |
+| `--circuit` | — | OpenQASM file, overrides `--state` and `--qubits` |
+| `--qubits` | 2 | 1 to 15 |
+| `--shots` | 2000 | shots per basis |
+| `--random-bases` | 0 | number of random Pauli bases, 0 selects all 3^n |
+| `--iterations` | 200 | maximum MLE iterations |
+| `--seed` | 42 | seed for the random state, the bases, and the sampling |
+
+The probe prints one CSV line to stdout and `true_purity=` to stderr:
+
+```text
+state,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,converged
+qasm,10,50,1000,32,0.992124,1.000000,0,227700.028,1
+```
+
+## Batch over many circuits
+
+`test/run_qst_batch.sh` runs the probe over one QASM file or a directory tree
+and writes one CSV row per circuit. It enforces a wall-clock limit and a
+resident-memory limit per circuit.
+
+```bash
+bash test/run_qst_batch.sh \
+    --output q8.csv \
+    --time-limit 600 \
+    --memory-limit 4096 \
+    --shots 1000 \
+    --random-bases 50 \
+    --iterations 100 \
+    /home/flareon/workshop/quantum_circuits/q8
+```
+
+Single file with tighter limits:
+
+```bash
+bash test/run_qst_batch.sh --output one.csv \
+    --time-limit 120 --memory-limit 1024 \
+    /home/flareon/workshop/quantum_circuits/q2/ae_alg_2.qasm
+```
+
+Script options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--output` | required | CSV output path |
+| `--time-limit` | 0 | wall-clock seconds per circuit, 0 = unlimited |
+| `--memory-limit` | 0 | peak RSS in MiB per circuit, 0 = unlimited |
+| `--shots` | 1000 | shots per basis |
+| `--random-bases` | 50 | random Pauli bases, 0 selects all 3^n |
+| `--iterations` | 50 | maximum MLE iterations |
+| `--seed` | 42 | sampling seed |
+| `--limit` | 0 | only the first N circuits, 0 = all |
+| `--probe` | `build/release/bin/mqt-core-qst-probe` | probe binary |
+| `-h`, `--help` | — | print the built-in help |
+
+The probe binary can also be set with `MQT_CORE_QST_PROBE`.
+
+## CSV columns
+
+```text
+circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,elapsed_s,peak_rss_mb,status
+```
+
+`status` is one of `ok`, `timeout`, `memory`, `error`. For every status other
+than `ok`, the columns `n` through `converged` hold `-`; `elapsed_s` and
+`peak_rss_mb` still report what was measured before the abort.
+
+```text
+circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,elapsed_s,peak_rss_mb,status
+"/…/q2/ae_alg_2.qasm",2,9,1000,50,0.991182,0.982939,1.282,0,0.21,5.7,ok
+"/…/q10/adder_n10.qasm",-,-,-,-,-,-,-,-,2.09,63.8,timeout
+"/…/q10/adder_n10.qasm",-,-,-,-,-,-,-,-,0.21,34.3,memory
+"/…/q16/ae_alg_16.qasm",-,-,-,-,-,-,-,-,0.41,42.0,error
+```
+
+Rows are appended as each circuit finishes, so an interrupted run keeps the
+results collected so far. The script exits with status 1 when at least one
+circuit ended in `error`; `timeout` and `memory` are not treated as errors.
+
+## How the limits work
+
+The memory limit is enforced on the resident set size (`VmRSS`) of the probe
+process, polled every 0.2 s. `ulimit -v` is not used because it limits the
+virtual address space, which OpenMP runs exceed long before they use that much
+resident memory. The sampling interval means the reported peak can slightly
+exceed the configured limit.
+
+The time limit uses the same poll loop with millisecond timestamps, so the
+resolution is about 0.2 s.
+
+## Measured behaviour
+
+GHZ state, 1000 shots per basis:
+
+| n | bases | iterations | fidelity | purity | time | peak RSS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 50 | 50 | 0.926 | 0.865 | 10.5 s | 39 MB |
+| 10 | 50 | 50 | 0.770 | 0.664 | 428 s | 141 MB |
+| 11 | 20 | 10 | 0.421 | 0.475 | 152 s | 311 MB |
+| 12 | 20 | 5 | 0.047 | 0.085 | 252 s | 1.08 GB |
+| 13 | 5 | 1 | 0.008 | 0.025 | 92 s | 4.22 GB |
+
+Real circuits from `/home/flareon/workshop/quantum_circuits`:
+
+| circuit | n | bases | iterations | fidelity | time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ae_alg_2 | 2 | 9 (all) | 100 | 0.992 | 2.4 s |
+| adder_n4 | 4 | 81 (all) | 23 | 0.9999 | 14 s |
+| ae_alg_6 | 6 | 50 | 100 | 0.948 | 3.6 s |
+| ae_alg_8 | 8 | 100 | 100 | 0.982 | 58 s |
+| adder_n10 | 10 | 50 | 32 | 0.992 | 230 s |
+
+Fidelity depends on the state, not only on n: the maximally entangled GHZ
+state spreads over all 2^n outcomes in a random basis, while an adder state
+stays concentrated near a few basis states and converges much faster.
+
+## Scale limits
+
+The dense path needs four full `16 * 4^n` byte matrices, so the peak memory is
+`64 * 4^n` bytes. n = 13 needs 4.2 GB, n = 14 needs 16 GB, n = 15 would need
+64 GB. Time grows by about a factor of four per qubit. Practical values are
+n <= 13; above that a different representation is required.
+
+## Notes
+
+- `--iterations` is an upper bound. Set it well above the number of iterations
+the MLE actually needs; n = 8 needs about 100 to reach fidelity 0.988.
+- `--random-bases` trades accuracy for time. A full 3^n basis gives the best
+result; 50 random bases are a reasonable default for n >= 6.

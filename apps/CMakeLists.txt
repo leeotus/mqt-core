@@ -19,7 +19,7 @@ add_executable(mqt-core-dump-unitary dump_unitary.cpp)
 target_link_libraries(mqt-core-dump-unitary PRIVATE MQT::CoreDD MQT::CoreQASM)
 
 add_executable(mqt-core-qst-probe qst_probe.cpp)
-target_link_libraries(mqt-core-qst-probe PRIVATE MQT::CoreDD MQT::CoreIR)
+target_link_libraries(mqt-core-qst-probe PRIVATE MQT::CoreDD MQT::CoreIR MQT::CoreQASM)
 
 # Keep the binaries in a predictable place for the experiment scripts.
 set_target_properties(
