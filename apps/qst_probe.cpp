@@ -17,7 +17,8 @@
  * Usage:
  *   mqt-core-qst-probe [--state zero|ghz|random] [--circuit FILE.qasm]
  *                      [--qubits N] [--shots S] [--iterations I]
- *                      [--random-bases K] [--seed SEED]
+ *                      [--random-bases K] [--max-outcomes K]
+ *                      [--backend qmdd|dense] [--seed SEED]
  *
  * With --circuit the state comes from the given OpenQASM file; final
  * measurements are removed because the density matrix is built from the
@@ -29,6 +30,8 @@
 #include "ir/QuantumComputation.hpp"
 #include "qasm3/Importer.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -41,12 +44,18 @@ namespace {
 struct Options {
   std::string state = "ghz";
   std::string circuitPath;
+  dd::QST::Backend backend = dd::QST::Backend::QMDD;
   std::size_t qubits = 2U;
   std::size_t shots = 2000U;
   std::size_t iterations = 200U;
   std::size_t randomBases = 0U;
+  std::size_t maxOutcomes = 0U;
   std::size_t seed = 42U;
 };
+
+std::string backendName(const dd::QST::Backend backend) {
+  return backend == dd::QST::Backend::QMDD ? "qmdd" : "dense";
+}
 
 qc::QuantumComputation prepareCircuit(const Options& options) {
   const auto width = static_cast<qc::Qubit>(options.qubits);
@@ -80,6 +89,7 @@ qc::QuantumComputation prepareCircuit(const Options& options) {
 } // namespace
 
 int main(int argc, char** argv) {
+  const auto totalStart = std::chrono::steady_clock::now();
   Options options;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -93,6 +103,18 @@ int main(int argc, char** argv) {
       options.iterations = std::stoul(argv[++i]);
     } else if (argument == "--random-bases" && i + 1 < argc) {
       options.randomBases = std::stoul(argv[++i]);
+    } else if (argument == "--max-outcomes" && i + 1 < argc) {
+      options.maxOutcomes = std::stoul(argv[++i]);
+    } else if (argument == "--backend" && i + 1 < argc) {
+      const std::string backend = argv[++i];
+      if (backend == "qmdd") {
+        options.backend = dd::QST::Backend::QMDD;
+      } else if (backend == "dense") {
+        options.backend = dd::QST::Backend::Dense;
+      } else {
+        std::fprintf(stderr, "unknown backend: %s\n", backend.c_str());
+        return 2;
+      }
     } else if (argument == "--circuit" && i + 1 < argc) {
       options.circuitPath = argv[++i];
     } else if (argument == "--seed" && i + 1 < argc) {
@@ -100,7 +122,8 @@ int main(int argc, char** argv) {
     } else if (argument == "-h" || argument == "--help") {
       std::printf("usage: %s [--state zero|ghz|random] [--circuit FILE.qasm] "
                   "[--qubits N] [--shots S] [--iterations I] "
-                  "[--random-bases K] [--seed SEED]\n",
+                  "[--random-bases K] [--max-outcomes K] "
+                  "[--backend qmdd|dense] [--seed SEED]\n",
                   argv[0]);
       return 0;
     } else {
@@ -125,32 +148,55 @@ int main(int argc, char** argv) {
     circuit = prepareCircuit(options);
   }
 
-  // The dense path needs a full 4^n matrix, so the width is bounded by memory.
-  if (options.qubits == 0U || options.qubits > 15U) {
-    std::fprintf(stderr, "QST supports 1 to 15 qubits, got %zu\n",
+  // The sampling path enumerates all 2^n outcomes and keeps one counter and
+  // one probability per outcome. The cap keeps that bookkeeping near 256 MB.
+  // The dense backend has a much lower limit of its own.
+  constexpr std::size_t MAX_QUBITS = 24U;
+  if (options.qubits == 0U || options.qubits > MAX_QUBITS) {
+    std::fprintf(stderr, "QST supports 1 to %zu qubits, got %zu\n", MAX_QUBITS,
                  options.qubits);
     return 2;
   }
 
   dd::Package dd(options.qubits);
+  const auto densityStart = std::chrono::steady_clock::now();
   auto rhoTrue = dd::QST::densityMatrix(dd, circuit);
+  const auto densityMs = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - densityStart)
+                             .count();
 
+  const auto basisStart = std::chrono::steady_clock::now();
   const auto bases =
       options.randomBases == 0U
           ? dd::QST::allPauliBases(options.qubits)
           : dd::QST::randomPauliBases(options.qubits, options.randomBases,
                                       options.seed);
+  const auto basisMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - basisStart)
+                           .count();
+  const auto samplingStart = std::chrono::steady_clock::now();
   const auto records =
       dd::QST::sample(dd, rhoTrue, bases, options.shots, options.seed);
+  const auto samplingMs = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - samplingStart)
+                              .count();
 
   dd::QST::Config config;
+  config.backend = options.backend;
   config.shotsPerBasis = options.shots;
   config.maxIterations = options.iterations;
+  config.maxOutcomesPerBasis = options.maxOutcomes;
   config.seed = options.seed;
   auto result = dd::QST::reconstruct(dd, records, bases, config);
+  if (result.rho.p == nullptr && result.rhoMatrix.empty()) {
+    std::fprintf(stderr, "QST did not produce a reconstruction\n");
+    return 1;
+  }
 
+  const auto metricsStart = std::chrono::steady_clock::now();
   double fidelity = 0.0;
   double purity = 0.0;
+  double trace = 0.0;
   if (!result.rhoMatrix.empty()) {
     const auto trueMatrix = rhoTrue.getMatrix(options.qubits);
     for (std::size_t row = 0U; row < trueMatrix.size(); ++row) {
@@ -159,19 +205,46 @@ int main(int argc, char** argv) {
         purity +=
             (result.rhoMatrix[row][col] * result.rhoMatrix[col][row]).real();
       }
+      trace += result.rhoMatrix[row][row].real();
     }
   } else {
     fidelity = dd::QST::overlap(dd, rhoTrue, result.rho, options.qubits);
     purity = dd::QST::purity(dd, result.rho, options.qubits);
+    auto identity = dd.createInitialMatrix({});
+    dd.incRef(identity);
+    trace = dd::QST::overlap(dd, result.rho, identity, options.qubits);
+    dd.decRef(identity);
   }
 
-  std::fprintf(stderr, "true_purity=%.6f\n",
-               dd::QST::purity(dd, rhoTrue, options.qubits));
-  std::printf("state,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,"
-              "converged\n");
-  std::printf("%s,%zu,%zu,%zu,%zu,%.6f,%.6f,%zu,%.3f,%d\n",
-              options.state.c_str(), options.qubits, bases.size(),
-              options.shots, result.iterations, fidelity, purity, result.ddSize,
-              result.elapsedMs, result.converged ? 1 : 0);
+  const auto truePurity = dd::QST::purity(dd, rhoTrue, options.qubits);
+  fidelity = std::clamp(fidelity, 0.0, 1.0);
+  const auto traceDistance = std::sqrt(std::max(0.0, 1.0 - fidelity));
+  const auto traceError = std::abs(trace - 1.0);
+  const auto metricsMs = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - metricsStart)
+                             .count();
+  const auto totalMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - totalStart)
+                           .count();
+
+  std::fprintf(stderr, "true_purity=%.6f\n", truePurity);
+  std::printf(
+      "state,backend,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,"
+      "converged,max_iterations,max_outcomes,true_purity,trace_distance,trace,"
+      "trace_error,log_likelihood,observed_outcomes,retained_outcomes,"
+      "initial_dd_size,peak_dd_size,peak_r_dd_size,density_ms,basis_ms,"
+      "sampling_ms,reconstruct_init_ms,reconstruct_iter_ms,metrics_ms,"
+      "total_ms\n");
+  std::printf(
+      "%s,%s,%zu,%zu,%zu,%zu,%.6f,%.6f,%zu,%.3f,%d,%zu,%zu,%.6f,%.6f,%.6f,"
+      "%.6f,%.6f,%zu,%zu,%zu,%zu,%zu,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+      options.state.c_str(), backendName(result.backend).c_str(),
+      options.qubits, bases.size(), options.shots, result.iterations, fidelity,
+      purity, result.ddSize, result.elapsedMs, result.converged ? 1 : 0,
+      options.iterations, options.maxOutcomes, truePurity, traceDistance, trace,
+      traceError, result.logLikelihood, result.observedOutcomes,
+      result.retainedOutcomes, result.initialDdSize, result.peakDdSize,
+      result.peakRSize, densityMs, basisMs, samplingMs, result.initializationMs,
+      result.iterationMs, metricsMs, totalMs);
   return 0;
 }

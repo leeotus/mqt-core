@@ -12,10 +12,12 @@
 
 #include "dd/FunctionalityConstruction.hpp"
 #include "dd/Package.hpp"
+#include "dd/StateGeneration.hpp"
 #include "ir/QuantumComputation.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -50,20 +52,41 @@ mEdge scaled(Package& dd, mEdge edge, const double factor) {
   return edge;
 }
 
-/// Return the real part of the trace.
-/// @details The trace is accumulated from the non-zero matrix entries, so the
-/// computation follows the DD paths instead of materializing the full matrix.
+/// Visit the diagonal entries of a matrix DD without visiting off-diagonal
+/// entries.
+template <typename Callback>
+void traverseDiagonal(const mEdge& edge, const std::complex<fp>& amplitude,
+                      const std::size_t index, const std::size_t level,
+                      Callback&& callback) {
+  const auto value = amplitude * static_cast<std::complex<fp>>(edge.w);
+  if (std::abs(value) == 0.0) {
+    return;
+  }
+  if (level == 0U) {
+    callback(index, value);
+    return;
+  }
+
+  const auto nextLevel = static_cast<Qubit>(level - 1U);
+  if (edge.isTerminal() || edge.p->v < nextLevel) {
+    traverseDiagonal(edge, amplitude, index, nextLevel, callback);
+    traverseDiagonal(edge, amplitude, index | (1ULL << nextLevel), nextLevel,
+                     callback);
+    return;
+  }
+
+  const auto upperIndex = index | (1ULL << nextLevel);
+  traverseDiagonal(edge.p->e[0], value, index, nextLevel, callback);
+  traverseDiagonal(edge.p->e[3], value, upperIndex, nextLevel, callback);
+}
+
+/// Return the real part of the trace without materializing the matrix.
 double traceReal(const mEdge& edge, const std::size_t nQubits) {
   double value = 0.0;
-  edge.traverseMatrix(
-      std::complex<fp>{1.0, 0.0}, 0U, 0U,
-      [&value](const std::size_t i, const std::size_t j,
-               const std::complex<fp>& amplitude) {
-        if (i == j) {
-          value += amplitude.real();
-        }
-      },
-      nQubits);
+  traverseDiagonal(edge, {1.0, 0.0}, 0U, nQubits,
+                   [&value](const std::size_t, const std::complex<fp>& entry) {
+                     value += entry.real();
+                   });
   return value;
 }
 
@@ -114,6 +137,94 @@ CVec projectorVector(const std::size_t nQubits,
     result = std::move(product);
   }
   return result;
+}
+
+/// Return |v> as a vector DD for the rank-one projector |v><v|.
+vEdge projectorVectorDD(Package& dd, const std::size_t nQubits,
+                        const QST::MeasurementBasis& basis,
+                        const std::vector<int>& bits) {
+  std::vector<BasisStates> state(nQubits, BasisStates::zero);
+  for (std::size_t qubit = 0U; qubit < nQubits; ++qubit) {
+    const bool one = bits[qubit] != 0;
+    switch (basis.bases[qubit]) {
+    case QST::Basis::Z:
+      state[qubit] = one ? BasisStates::one : BasisStates::zero;
+      break;
+    case QST::Basis::X:
+      state[qubit] = one ? BasisStates::minus : BasisStates::plus;
+      break;
+    case QST::Basis::Y:
+      state[qubit] = one ? BasisStates::left : BasisStates::right;
+      break;
+    }
+  }
+  return makeBasisState(nQubits, state, dd);
+}
+
+/// Return <v|rho|v> without materializing rho.
+double expectationFromVector(Package& dd, const mEdge& rho,
+                             const vEdge& state) {
+  auto product = dd.multiply(rho, state);
+  dd.incRef(product);
+  const auto value = dd.innerProduct(state, product).r;
+  dd.decRef(product);
+  return std::max(0.0, value);
+}
+
+mCachedEdge makeDiagonalDDRec(Package& dd, const std::vector<double>& diagonal,
+                              const std::size_t offset,
+                              const std::size_t level) {
+  if (level == 0U) {
+    return dd.makeDDNode<mNode, CachedEdge>(
+        0U, {mCachedEdge::terminal(dd.cn.lookup(diagonal[offset])),
+             mCachedEdge::zero(), mCachedEdge::zero(),
+             mCachedEdge::terminal(dd.cn.lookup(diagonal[offset + 1U]))});
+  }
+  const auto half = 1ULL << level;
+  const auto lower = static_cast<Qubit>(level);
+  return dd.makeDDNode<mNode, CachedEdge>(
+      lower, {makeDiagonalDDRec(dd, diagonal, offset, level - 1U),
+              mCachedEdge::zero(), mCachedEdge::zero(),
+              makeDiagonalDDRec(dd, diagonal, offset + half, level - 1U)});
+}
+
+/// Build a diagonal matrix DD from a dense diagonal. The input has 2^n
+/// entries; the resulting matrix has only the same number of leaves.
+mEdge makeDiagonalDD(Package& dd, const std::vector<double>& diagonal) {
+  if (diagonal.empty()) {
+    return mEdge::one();
+  }
+  if (diagonal.size() == 1U) {
+    return mEdge::terminal(dd.cn.lookup(diagonal.front()));
+  }
+  const auto level = std::bit_width(diagonal.size()) - 1U;
+  const auto root = makeDiagonalDDRec(dd, diagonal, 0U, level - 1U);
+  return {.p = root.p, .w = dd.cn.lookup(root.w)};
+}
+
+/// Return diag(U rho U^dagger) without materializing the rotated matrix.
+std::vector<double> probabilitiesFromRotation(Package& dd, const mEdge& rho,
+                                              const mEdge& operation,
+                                              const std::size_t nQubits) {
+  auto dagger = dd.conjugateTranspose(operation);
+  dd.incRef(dagger);
+  auto left = dd.multiply(operation, rho);
+  dd.incRef(left);
+  auto rotated = dd.multiply(left, dagger);
+  dd.incRef(rotated);
+  dd.decRef(left);
+  dd.decRef(dagger);
+
+  const std::size_t dimension = 1ULL << nQubits;
+  std::vector<double> probabilities(dimension, 0.0);
+  traverseDiagonal(rotated, {1.0, 0.0}, 0U, nQubits,
+                   [&probabilities](const std::size_t index,
+                                    const std::complex<fp>& amplitude) {
+                     probabilities[index] += std::max(0.0, amplitude.real());
+                   });
+  dd.decRef(rotated);
+  dd.garbageCollect();
+  return probabilities;
 }
 
 /// A dense matrix stored as interleaved real and imaginary parts.
@@ -208,7 +319,8 @@ double expectationValue(const FlatMatrix& matrix, const CVec& vector,
                         const std::size_t dimension) {
   double value = 0.0;
 #ifdef MQT_CORE_QST_USE_OPENMP
-#pragma omp parallel for schedule(static) reduction(+ : value) if (dimension >= 64U)
+#pragma omp parallel for schedule(static)                                      \
+    reduction(+ : value) if (dimension >= 64U)
 #endif
   for (std::size_t row = 0U; row < dimension; ++row) {
     fp realPart = 0.0;
@@ -346,76 +458,45 @@ mEdge QST::basisChange(Package& dd, const std::size_t qubit,
   return dd.makeGateDD(matrix, static_cast<qc::Qubit>(qubit));
 }
 
-std::vector<double> QST::basisProbabilities(Package& dd, const mEdge& rho,
-                                            const MeasurementBasis& basis,
-                                            const std::size_t nQubits) {
-  (void)dd;
-  auto matrix = rho.getMatrix(nQubits);
-  const std::size_t dimension = 1ULL << nQubits;
-  const double scale = 1.0 / std::sqrt(2.0);
-
+mEdge QST::basisChange(Package& dd, const std::size_t nQubits,
+                       const MeasurementBasis& basis) {
+  auto result = dd.createInitialMatrix({});
+  dd.incRef(result);
   for (std::size_t qubit = 0U; qubit < nQubits; ++qubit) {
     if (basis.bases[qubit] == Basis::Z) {
       continue;
     }
-    std::array<std::complex<fp>, 4> unitary{};
-    if (basis.bases[qubit] == Basis::X) {
-      unitary = {scale, scale, scale, -scale};
-    } else {
-      unitary = {scale, {0.0, -scale}, scale, {0.0, scale}};
-    }
-
-    const std::size_t mask = 1ULL << qubit;
-    for (std::size_t row = 0U; row < dimension; ++row) {
-      if ((row & mask) != 0U) {
-        continue;
-      }
-      const auto other = row | mask;
-      for (std::size_t col = 0U; col < dimension; ++col) {
-        const auto a = matrix[row][col];
-        const auto b = matrix[other][col];
-        matrix[row][col] = unitary[0] * a + unitary[1] * b;
-        matrix[other][col] = unitary[2] * a + unitary[3] * b;
-      }
-    }
-
-    for (std::size_t col = 0U; col < dimension; ++col) {
-      if ((col & mask) != 0U) {
-        continue;
-      }
-      const auto other = col | mask;
-      for (std::size_t row = 0U; row < dimension; ++row) {
-        const auto a = matrix[row][col];
-        const auto b = matrix[row][other];
-        matrix[row][col] =
-            a * std::conj(unitary[0]) + b * std::conj(unitary[1]);
-        matrix[row][other] =
-            a * std::conj(unitary[2]) + b * std::conj(unitary[3]);
-      }
-    }
+    auto local = basisChange(dd, qubit, basis.bases[qubit]);
+    dd.incRef(local);
+    auto product = dd.multiply(result, local);
+    dd.incRef(product);
+    dd.decRef(result);
+    dd.decRef(local);
+    result = product;
   }
+  dd.decRef(result);
+  return result;
+}
 
-  std::vector<double> probabilities(dimension, 0.0);
-  for (std::size_t i = 0U; i < dimension; ++i) {
-    probabilities[i] = matrix[i][i].real();
-  }
+std::vector<double> QST::basisProbabilities(Package& dd, const mEdge& rho,
+                                            const MeasurementBasis& basis,
+                                            const std::size_t nQubits) {
+  auto operation = basisChange(dd, nQubits, basis);
+  dd.incRef(operation);
+  auto probabilities = probabilitiesFromRotation(dd, rho, operation, nQubits);
+  dd.decRef(operation);
+  dd.garbageCollect();
   return probabilities;
 }
 
 double QST::probability(Package& dd, const mEdge& rho,
                         const MeasurementBasis& basis,
                         const std::vector<int>& bits) {
-  auto proj = projector(dd, basis.bases.size(), basis, bits);
-  auto product = dd.multiply(rho, proj);
-  double value = 0.0;
-  if (product.p != nullptr) {
-    dd.incRef(product);
-    value = traceReal(product, basis.bases.size());
-    dd.decRef(product);
-  }
-  dd.decRef(proj);
+  auto state = projectorVectorDD(dd, basis.bases.size(), basis, bits);
+  const auto value = expectationFromVector(dd, rho, state);
+  dd.decRef(state);
   dd.garbageCollect();
-  return std::max(0.0, value);
+  return value;
 }
 
 // ============================================================================
@@ -432,26 +513,12 @@ QST::sample(Package& dd, const mEdge& rho,
   }
   const auto nQubits = bases.front().bases.size();
   const std::size_t outcomes = 1ULL << nQubits;
-  // The bulk path needs one 2^n by 2^n matrix (16 * 4^n bytes). At n = 14 that
-  // is 4 GB, which still fits the memory budget of the dense MLE.
-  const bool useBulk = nQubits <= 15U;
   std::mt19937 rng(static_cast<std::mt19937::result_type>(seed));
   std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
   for (std::size_t basisIndex = 0U; basisIndex < bases.size(); ++basisIndex) {
-    std::vector<double> probabilities;
-    if (useBulk) {
-      probabilities = basisProbabilities(dd, rho, bases[basisIndex], nQubits);
-    } else {
-      probabilities.assign(outcomes, 0.0);
-      for (std::size_t outcome = 0U; outcome < outcomes; ++outcome) {
-        std::vector<int> bits(nQubits, 0);
-        for (std::size_t qubit = 0U; qubit < nQubits; ++qubit) {
-          bits[qubit] = static_cast<int>((outcome >> qubit) & 1ULL);
-        }
-        probabilities[outcome] = probability(dd, rho, bases[basisIndex], bits);
-      }
-    }
+    auto probabilities =
+        basisProbabilities(dd, rho, bases[basisIndex], nQubits);
     double total = 0.0;
     for (const auto value : probabilities) {
       total += value;
@@ -571,20 +638,22 @@ QST::Result QST::reconstructMatrix(
     const std::vector<MeasurementBasis>& bases, const Config& config) {
   (void)dd;
   Result result;
+  result.backend = Backend::Dense;
   const auto start = std::chrono::steady_clock::now();
   const auto nQubits = bases.front().bases.size();
   const std::size_t dimension = 1ULL << nQubits;
 
   std::vector<std::size_t> shotsPerBasis(bases.size(), 0U);
   for (const auto& record : records) {
-    if (record.basisIndex < bases.size()) {
+    if (record.basisIndex < bases.size() && record.count > 0U) {
       shotsPerBasis[record.basisIndex] += record.count;
+      ++result.observedOutcomes;
     }
   }
 
   std::vector<std::vector<const MeasurementRecord*>> perBasis(bases.size());
   for (const auto& record : records) {
-    if (record.basisIndex < bases.size()) {
+    if (record.basisIndex < bases.size() && record.count > 0U) {
       perBasis[record.basisIndex].push_back(&record);
     }
   }
@@ -594,8 +663,11 @@ QST::Result QST::reconstructMatrix(
   constexpr std::size_t WORK_BUDGET = 4000000000ULL;
   const std::size_t maxEntries =
       std::min<std::size_t>(20000U, WORK_BUDGET / (dimension * dimension));
+  const auto budgetLimit = std::max<std::size_t>(2U, maxEntries / bases.size());
   const std::size_t perBasisLimit =
-      std::max<std::size_t>(2U, maxEntries / bases.size());
+      config.maxOutcomesPerBasis == 0U
+          ? budgetLimit
+          : std::min(config.maxOutcomesPerBasis, budgetLimit);
 
   std::vector<CVec> projectors;
   std::vector<double> frequencies;
@@ -619,6 +691,7 @@ QST::Result QST::reconstructMatrix(
   if (projectors.empty()) {
     return result;
   }
+  result.retainedOutcomes = projectors.size();
 
   // Linear inversion initial value: rho = sum f_k |v_k><v_k| / Tr(...).
   FlatMatrix rho(2U * dimension * dimension, 0.0);
@@ -635,8 +708,12 @@ QST::Result QST::reconstructMatrix(
       rho[2U * (i * dimension + i)] = 1.0 / static_cast<double>(dimension);
     }
   }
+  result.initializationMs = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
 
   double previousLogL = -std::numeric_limits<double>::infinity();
+  const auto iterationStart = std::chrono::steady_clock::now();
   for (std::size_t iter = 0U; iter < config.maxIterations; ++iter) {
     FlatMatrix R(2U * dimension * dimension, 0.0);
     double logL = 0.0;
@@ -668,6 +745,9 @@ QST::Result QST::reconstructMatrix(
     }
     previousLogL = logL;
   }
+  result.iterationMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - iterationStart)
+                           .count();
 
   result.rhoMatrix = toCMat(rho, dimension);
   const auto stop = std::chrono::steady_clock::now();
@@ -676,11 +756,12 @@ QST::Result QST::reconstructMatrix(
   return result;
 }
 
-QST::Result QST::reconstruct(Package& dd,
-                             const std::vector<MeasurementRecord>& records,
-                             const std::vector<MeasurementBasis>& bases,
-                             const Config& config) {
+QST::Result QST::reconstructQMDD(Package& dd,
+                                 const std::vector<MeasurementRecord>& records,
+                                 const std::vector<MeasurementBasis>& bases,
+                                 const Config& config) {
   Result result;
+  result.backend = Backend::QMDD;
   const auto start = std::chrono::steady_clock::now();
   if (bases.empty() || records.empty()) {
     return result;
@@ -689,106 +770,156 @@ QST::Result QST::reconstruct(Package& dd,
   if (nQubits == 0U) {
     return result;
   }
-  if (nQubits <= 13U) {
-    return reconstructMatrix(dd, records, bases, config);
-  }
 
   std::vector<std::size_t> shotsPerBasis(bases.size(), 0U);
   for (const auto& record : records) {
-    if (record.basisIndex < bases.size()) {
+    if (record.basisIndex < bases.size() && record.count > 0U) {
       shotsPerBasis[record.basisIndex] += record.count;
+      ++result.observedOutcomes;
     }
   }
 
   std::vector<std::vector<const MeasurementRecord*>> perBasis(bases.size());
   for (const auto& record : records) {
-    if (record.basisIndex < bases.size()) {
+    if (record.basisIndex < bases.size() && record.count > 0U) {
       perBasis[record.basisIndex].push_back(&record);
     }
   }
 
-  // Keep only the most frequent outcomes per basis. Every entry costs one DD
-  // multiplication per iteration, so an unbounded entry list does not scale.
-  constexpr std::size_t MAX_ENTRIES_PER_BASIS = 32U;
-  struct Entry {
-    mEdge projector;
-    double frequency;
-  };
-  std::vector<Entry> entries;
-  for (auto& group : perBasis) {
+  std::vector<std::size_t> limits(bases.size(), 0U);
+  bool hasRecords = false;
+  for (std::size_t basisIndex = 0U; basisIndex < bases.size(); ++basisIndex) {
+    auto& group = perBasis[basisIndex];
     std::ranges::sort(group, [](const auto* a, const auto* b) {
       return a->count > b->count;
     });
-    const auto limit = std::min(MAX_ENTRIES_PER_BASIS, group.size());
-    for (std::size_t index = 0U; index < limit; ++index) {
-      const auto* record = group[index];
-      const auto shots = shotsPerBasis[record->basisIndex];
-      if (shots == 0U) {
-        continue;
-      }
-      auto proj =
-          projector(dd, nQubits, bases[record->basisIndex], record->bits);
-      dd.incRef(proj);
-      entries.push_back({proj, static_cast<double>(record->count) /
-                                   static_cast<double>(shots)});
-    }
+    limits[basisIndex] =
+        config.maxOutcomesPerBasis == 0U
+            ? group.size()
+            : std::min(config.maxOutcomesPerBasis, group.size());
+    result.retainedOutcomes += limits[basisIndex];
+    hasRecords = hasRecords || limits[basisIndex] > 0U;
   }
-  if (entries.empty()) {
+  if (!hasRecords) {
     return result;
   }
 
-  // Linear inversion initial value: rho = (1 / #bases) sum f_k Pi_k.
-  mEdge rho{};
-  for (const auto& entry : entries) {
-    auto term = scaled(dd, entry.projector, entry.frequency);
-    dd.incRef(term);
-    if (rho.p == nullptr) {
-      rho = term;
-    } else {
-      auto sum = dd.add(rho, term);
-      dd.incRef(sum);
-      dd.decRef(rho);
-      dd.decRef(term);
-      rho = sum;
+  std::vector<mEdge> operations(bases.size());
+  std::vector<mEdge> daggers(bases.size());
+  for (std::size_t basisIndex = 0U; basisIndex < bases.size(); ++basisIndex) {
+    if (limits[basisIndex] == 0U) {
+      continue;
     }
+    operations[basisIndex] = basisChange(dd, nQubits, bases[basisIndex]);
+    dd.incRef(operations[basisIndex]);
+    daggers[basisIndex] = dd.conjugateTranspose(operations[basisIndex]);
+    dd.incRef(daggers[basisIndex]);
   }
-  auto initial = scaled(dd, rho, 1.0 / static_cast<double>(bases.size()));
+
+  const std::size_t dimension = 1ULL << nQubits;
+  const auto addTransformedDiagonal = [&](mEdge& target,
+                                          const std::size_t basisIndex,
+                                          const std::vector<double>& diagonal) {
+    auto diagonalDD = makeDiagonalDD(dd, diagonal);
+    dd.incRef(diagonalDD);
+    auto left = dd.multiply(daggers[basisIndex], diagonalDD);
+    dd.incRef(left);
+    auto term = dd.multiply(left, operations[basisIndex]);
+    dd.incRef(term);
+    dd.decRef(left);
+    dd.decRef(diagonalDD);
+
+    if (target.p == nullptr) {
+      target = term;
+    } else {
+      auto sum = dd.add(target, term);
+      dd.incRef(sum);
+      dd.decRef(target);
+      dd.decRef(term);
+      target = sum;
+    }
+  };
+
+  const auto outcomeIndex = [nQubits](const std::vector<int>& bits) {
+    std::size_t outcome = 0U;
+    for (std::size_t qubit = 0U; qubit < nQubits; ++qubit) {
+      outcome |= static_cast<std::size_t>(bits[qubit]) << qubit;
+    }
+    return outcome;
+  };
+
+  // Linear inversion: R0 = sum_b U_b^dagger D_b U_b with D_b holding the
+  // observed frequencies in basis b.
+  mEdge rho{};
+  for (std::size_t basisIndex = 0U; basisIndex < bases.size(); ++basisIndex) {
+    if (limits[basisIndex] == 0U) {
+      continue;
+    }
+    std::vector<double> diagonal(dimension, 0.0);
+    const auto shots = shotsPerBasis[basisIndex];
+    for (std::size_t index = 0U; index < limits[basisIndex]; ++index) {
+      const auto* record = perBasis[basisIndex][index];
+      diagonal[outcomeIndex(record->bits)] =
+          static_cast<double>(record->count) / static_cast<double>(shots);
+    }
+    addTransformedDiagonal(rho, basisIndex, diagonal);
+  }
+  const auto initialTrace = traceReal(rho, nQubits);
+  if (!std::isfinite(initialTrace) || initialTrace <= 0.0) {
+    for (auto& operation : operations) {
+      if (operation.p != nullptr) {
+        dd.decRef(operation);
+      }
+    }
+    for (auto& dagger : daggers) {
+      if (dagger.p != nullptr) {
+        dd.decRef(dagger);
+      }
+    }
+    dd.garbageCollect();
+    return result;
+  }
+  auto initial = scaled(dd, rho, 1.0 / initialTrace);
   dd.incRef(initial);
   dd.decRef(rho);
   rho = initial;
+  dd.garbageCollect();
+  result.initialDdSize = rho.size();
+  result.peakDdSize = result.initialDdSize;
+  result.initializationMs = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - start)
+                                .count();
   double previousLogL = -std::numeric_limits<double>::infinity();
+  const auto iterationStart = std::chrono::steady_clock::now();
 
   for (std::size_t iter = 0U; iter < config.maxIterations; ++iter) {
     mEdge R{};
     double logL = 0.0;
-    for (const auto& entry : entries) {
-      auto product = dd.multiply(rho, entry.projector);
-      double probabilityValue = 0.0;
-      if (product.p != nullptr) {
-        dd.incRef(product);
-        probabilityValue = traceReal(product, nQubits);
-        dd.decRef(product);
+    for (std::size_t basisIndex = 0U; basisIndex < bases.size(); ++basisIndex) {
+      if (limits[basisIndex] == 0U) {
+        continue;
       }
-      const double p = std::max(1e-12, probabilityValue);
-
-      double weight = entry.frequency / p;
-      if (!std::isfinite(weight)) {
-        weight = 1e12;
+      const auto probabilities =
+          probabilitiesFromRotation(dd, rho, operations[basisIndex], nQubits);
+      std::vector<double> diagonal(dimension, 0.0);
+      const auto shots = shotsPerBasis[basisIndex];
+      for (std::size_t index = 0U; index < limits[basisIndex]; ++index) {
+        const auto* record = perBasis[basisIndex][index];
+        const auto frequency =
+            static_cast<double>(record->count) / static_cast<double>(shots);
+        const double p =
+            std::max(1e-12, probabilities[outcomeIndex(record->bits)]);
+        double weight = frequency / p;
+        if (!std::isfinite(weight)) {
+          weight = 1e12;
+        }
+        diagonal[outcomeIndex(record->bits)] = std::min(weight, 1e12);
+        logL += frequency * std::log(p);
       }
-      weight = std::min(weight, 1e12);
-
-      auto term = scaled(dd, entry.projector, weight);
-      dd.incRef(term);
-      if (R.p == nullptr) {
-        R = term;
-      } else {
-        auto sum = dd.add(R, term);
-        dd.incRef(sum);
-        dd.decRef(R);
-        dd.decRef(term);
-        R = sum;
-      }
-      logL += entry.frequency * std::log(p);
+      addTransformedDiagonal(R, basisIndex, diagonal);
+    }
+    if (R.p != nullptr) {
+      result.peakRSize = std::max(result.peakRSize, R.size());
     }
     dd.garbageCollect();
 
@@ -797,6 +928,7 @@ QST::Result QST::reconstruct(Package& dd,
     auto candidate = dd.multiply(R, rhoR);
     dd.incRef(candidate);
     dd.decRef(rhoR);
+    result.peakDdSize = std::max(result.peakDdSize, candidate.size());
 
     const double trace = traceReal(candidate, nQubits);
     if (!std::isfinite(trace) || trace <= 0.0) {
@@ -812,6 +944,7 @@ QST::Result QST::reconstruct(Package& dd,
     dd.decRef(rho);
     dd.decRef(R);
     rho = normalized;
+    result.peakDdSize = std::max(result.peakDdSize, rho.size());
     dd.garbageCollect();
 
     result.iterations = iter + 1U;
@@ -824,9 +957,19 @@ QST::Result QST::reconstruct(Package& dd,
     }
     previousLogL = logL;
   }
+  result.iterationMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - iterationStart)
+                           .count();
 
-  for (auto& entry : entries) {
-    dd.decRef(entry.projector);
+  for (auto& operation : operations) {
+    if (operation.p != nullptr) {
+      dd.decRef(operation);
+    }
+  }
+  for (auto& dagger : daggers) {
+    if (dagger.p != nullptr) {
+      dd.decRef(dagger);
+    }
   }
   dd.garbageCollect();
 
@@ -836,6 +979,21 @@ QST::Result QST::reconstruct(Package& dd,
   result.elapsedMs =
       std::chrono::duration<double, std::milli>(stop - start).count();
   return result;
+}
+
+QST::Result QST::reconstruct(Package& dd,
+                             const std::vector<MeasurementRecord>& records,
+                             const std::vector<MeasurementBasis>& bases,
+                             const Config& config) {
+  if (config.backend == Backend::Dense) {
+    if (bases.empty() || records.empty()) {
+      Result result;
+      result.backend = Backend::Dense;
+      return result;
+    }
+    return reconstructMatrix(dd, records, bases, config);
+  }
+  return reconstructQMDD(dd, records, bases, config);
 }
 
 } // namespace dd

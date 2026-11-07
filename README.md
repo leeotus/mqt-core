@@ -1,9 +1,11 @@
 # MQT Core — QST experiment build and run notes
 
 This branch adds a maximum-likelihood quantum state tomography (QST) module
-(`include/mqt-core/dd/QST.hpp`, `src/dd/QST.cpp`) plus a command line probe.
-It rebuilds an n-qubit density matrix from Pauli-basis measurement records with
-the dilute MLE iteration `R = sum (f/p) Pi`, `rho <- R rho R / Tr(R rho R)`.
+(`include/mqt-core/dd/QST.hpp`, `src/dd/QST.cpp`) plus a command line probe. It
+rebuilds an n-qubit density matrix from Pauli-basis measurement records with the
+dilute MLE iteration `R = sum (f/p) Pi`, `rho <- R rho R / Tr(R rho R)`. The
+default QMDD backend keeps `rho` and `R` as matrix decision diagrams. The dense
+backend materializes full matrices and serves as the comparison baseline.
 
 ## Requirements
 
@@ -27,6 +29,18 @@ cmake --build build/release --target mqt-core-qst-probe mqt-core-dd-test -j 8
 ```
 
 For a debug build, replace `release` with `debug` everywhere.
+
+Separate comparison builds:
+
+```bash
+cmake --preset release -B build/matrix_qst_build -DCMAKE_UNITY_BUILD=OFF
+cmake --build build/matrix_qst_build \
+    --target mqt-core-qst-probe mqt-core-dd-test -j 8
+
+cmake --preset release -B build/qmdd_qst_build -DCMAKE_UNITY_BUILD=OFF
+cmake --build build/qmdd_qst_build \
+    --target mqt-core-qst-probe mqt-core-dd-test -j 8
+```
 
 ## Test
 
@@ -59,18 +73,29 @@ Probe options:
 | --- | --- | --- |
 | `--state` | `ghz` | `zero`, `ghz`, or `random` |
 | `--circuit` | — | OpenQASM file, overrides `--state` and `--qubits` |
-| `--qubits` | 2 | 1 to 15 |
+| `--qubits` | 2 | 1 to 24 |
 | `--shots` | 2000 | shots per basis |
 | `--random-bases` | 0 | number of random Pauli bases, 0 selects all 3^n |
 | `--iterations` | 200 | maximum MLE iterations |
+| `--max-outcomes` | 0 | retained outcomes per basis, 0 keeps every observed outcome |
+| `--backend` | `qmdd` | `qmdd` or `dense` reconstruction |
 | `--seed` | 42 | seed for the random state, the bases, and the sampling |
 
 The probe prints one CSV line to stdout and `true_purity=` to stderr:
 
 ```text
-state,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,converged
-qasm,10,50,1000,32,0.992124,1.000000,0,227700.028,1
+state,backend,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,
+converged,max_iterations,max_outcomes,true_purity,trace_distance,trace,
+trace_error,log_likelihood,observed_outcomes,retained_outcomes,
+initial_dd_size,peak_dd_size,peak_r_dd_size,density_ms,basis_ms,
+sampling_ms,reconstruct_init_ms,reconstruct_iter_ms,metrics_ms,total_ms
+ghz,qmdd,3,10,100,3,0.733216,0.602308,22,2.472,0,3,4,1.000000,
+0.516511,1.000000,0.000000,-13.724498,60,40,22,22,22,0.018,0.006,
+0.099,0.587,1.854,0.124,5.327
 ```
+
+`trace_distance` uses `sqrt(max(0, 1 - fidelity))`. It is exact for two pure
+states and is an approximation for a mixed reconstruction.
 
 ## Batch over many circuits
 
@@ -86,6 +111,7 @@ bash test/run_qst_batch.sh \
     --shots 1000 \
     --random-bases 50 \
     --iterations 100 \
+    --backend qmdd \
     /home/flareon/workshop/quantum_circuits/q8
 ```
 
@@ -107,8 +133,11 @@ Script options:
 | `--shots` | 1000 | shots per basis |
 | `--random-bases` | 50 | random Pauli bases, 0 selects all 3^n |
 | `--iterations` | 50 | maximum MLE iterations |
+| `--max-outcomes` | 0 | retained outcomes per basis, 0 keeps all |
+| `--backend` | `qmdd` | `qmdd` or `dense` reconstruction |
 | `--seed` | 42 | sampling seed |
 | `--limit` | 0 | only the first N circuits, 0 = all |
+| `--full-path` | off | write the full circuit path to the CSV instead of the file name |
 | `--probe` | `build/release/bin/mqt-core-qst-probe` | probe binary |
 | `-h`, `--help` | — | print the built-in help |
 
@@ -117,24 +146,67 @@ The probe binary can also be set with `MQT_CORE_QST_PROBE`.
 ## CSV columns
 
 ```text
-circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,elapsed_s,peak_rss_mb,status
+circuit,backend,n,bases,shots,iterations,fidelity,purity,time_ms,converged,
+dd_size,max_iterations,max_outcomes,true_purity,trace_distance,trace,
+trace_error,log_likelihood,observed_outcomes,retained_outcomes,
+initial_dd_size,peak_dd_size,peak_r_dd_size,density_ms,basis_ms,sampling_ms,
+reconstruct_init_ms,reconstruct_iter_ms,metrics_ms,total_ms,elapsed_s,
+peak_rss_mb,status
 ```
+
+The detailed fields have these meanings:
+
+| Field | Meaning |
+| --- | --- |
+| `dd_size` | final QMDD node count; 0 for the dense backend |
+| `initial_dd_size` | QMDD node count after linear-inversion initialization |
+| `peak_dd_size` | largest QMDD density matrix during MLE |
+| `peak_r_dd_size` | largest QMDD MLE update matrix `R` |
+| `observed_outcomes` | distinct non-zero `(basis, outcome)` records |
+| `retained_outcomes` | records actually used by the backend |
+| `trace` | reconstructed density matrix trace |
+| `trace_error` | `abs(trace - 1)` |
+| `log_likelihood` | likelihood of the retained outcomes |
+| `density_ms` | circuit-to-density-matrix time |
+| `basis_ms` | measurement-basis generation time |
+| `sampling_ms` | simulated measurement time |
+| `reconstruct_init_ms` | reconstruction setup time |
+| `reconstruct_iter_ms` | MLE iteration time |
+| `metrics_ms` | fidelity, purity, and trace evaluation time |
+| `total_ms` | probe time including input and setup |
+
+The batch adds process-level `elapsed_s` and `peak_rss_mb`. The comparison
+script writes the complete dense and QMDD metric sets side by side.
 
 `status` is one of `ok`, `timeout`, `memory`, `error`. For every status other
-than `ok`, the columns `n` through `converged` hold `-`; `elapsed_s` and
-`peak_rss_mb` still report what was measured before the abort.
+than `ok`, probe-derived fields hold `-`; `elapsed_s` and `peak_rss_mb` still
+report what was measured before the abort.
 
 ```text
-circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,elapsed_s,peak_rss_mb,status
-"/…/q2/ae_alg_2.qasm",2,9,1000,50,0.991182,0.982939,1.282,0,0.21,5.7,ok
-"/…/q10/adder_n10.qasm",-,-,-,-,-,-,-,-,2.09,63.8,timeout
-"/…/q10/adder_n10.qasm",-,-,-,-,-,-,-,-,0.21,34.3,memory
-"/…/q16/ae_alg_16.qasm",-,-,-,-,-,-,-,-,0.41,42.0,error
+circuit,backend,n,bases,shots,iterations,fidelity,purity,time_ms,converged,...
+"ae_alg_2.qasm",qmdd,2,9,1000,50,0.991182,0.982939,1.282,0,...
+"adder_n10.qasm",qmdd,-,-,-,-,-,-,-,-,...
 ```
+
+The `circuit` column holds the file name only. Pass `--full-path` to record the
+path as it was found instead.
 
 Rows are appended as each circuit finishes, so an interrupted run keeps the
 results collected so far. The script exits with status 1 when at least one
 circuit ended in `error`; `timeout` and `memory` are not treated as errors.
+
+Run both reconstruction backends on the same input with:
+
+```bash
+./test/compare_qst_backends.py \
+    --circuits /home/flareon/workshop/quantum_circuits/q13/ghz_alg_13.qasm \
+    --probe build/qmdd_qst_build/bin/mqt-core-qst-probe \
+    --output test/qst_qmdd_results/qst-qmdd-q13-ghz.csv \
+    --shots 1 --random-bases 5 --iterations 1 --max-outcomes 1
+```
+
+The QMDD/dense measurements are in
+[`test/qst_qmdd_results/qst-qmdd.md`](test/qst_qmdd_results/qst-qmdd.md).
 
 ## How the limits work
 
@@ -147,7 +219,7 @@ exceed the configured limit.
 The time limit uses the same poll loop with millisecond timestamps, so the
 resolution is about 0.2 s.
 
-## Measured behaviour
+## Dense baseline measurements
 
 GHZ state, 1000 shots per basis:
 
@@ -169,16 +241,30 @@ Real circuits from `/home/flareon/workshop/quantum_circuits`:
 | ae_alg_8 | 8 | 100 | 100 | 0.982 | 58 s |
 | adder_n10 | 10 | 50 | 32 | 0.992 | 230 s |
 
-Fidelity depends on the state, not only on n: the maximally entangled GHZ
-state spreads over all 2^n outcomes in a random basis, while an adder state
-stays concentrated near a few basis states and converges much faster.
+Fidelity depends on the state, not only on n: the maximally entangled GHZ state
+spreads over all 2^n outcomes in a random basis, while an adder state stays
+concentrated near a few basis states and converges much faster.
 
 ## Scale limits
 
 The dense path needs four full `16 * 4^n` byte matrices, so the peak memory is
-`64 * 4^n` bytes. n = 13 needs 4.2 GB, n = 14 needs 16 GB, n = 15 would need
-64 GB. Time grows by about a factor of four per qubit. Practical values are
-n <= 13; above that a different representation is required.
+`64 * 4^n` bytes. n = 13 needs 4.1 GB, n = 14 needs 16.4 GB and completes in
+about 37 s, n = 15 would need about 66 GB. Time grows by about a factor of four
+per qubit. On a 32 GB budget the dense backend therefore reaches n = 14 and
+stops below n = 15.
+
+The QMDD backend has no fixed qubit limit from dense matrix storage. Its cost
+depends on the number of QMDD nodes and on how strongly the measurements mix
+bases. Structured 13-qubit states can stay compact. Random measurement bases can
+make `R` dense in the matrix DD and make QMDD slower than BLAS.
+
+The qubit limit of the QMDD backend therefore depends on the number of retained
+measurement outcomes, not on `n`. With five retained outcomes it stayed below
+150 MB up to n = 22, while the dense backend stops between n = 14 and n = 15.
+With ten retained outcomes at n = 15 the reconstruction took 86 s. With about
+fifty retained outcomes at n = 16 it did not finish within 5.4 min. The
+measurements are in
+[`test/qst_qmdd_results/qst-qmdd-scaling.md`](test/qst_qmdd_results/qst-qmdd-scaling.md).
 
 ## Notes
 

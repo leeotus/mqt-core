@@ -153,6 +153,7 @@ TEST(QST, ReconstructsComputationalBasisState) {
   const auto bases = QST::allPauliBases(1);
 
   QST::Config config;
+  config.backend = QST::Backend::Dense;
   config.shotsPerBasis = 4000U;
   config.maxIterations = 200U;
   config.tolerance = 1e-10;
@@ -179,6 +180,7 @@ TEST(QST, ReconstructsBellState) {
   const auto bases = QST::allPauliBases(2);
 
   QST::Config config;
+  config.backend = QST::Backend::Dense;
   config.shotsPerBasis = 2000U;
   config.maxIterations = 200U;
   config.tolerance = 1e-10;
@@ -226,6 +228,7 @@ TEST(QST, ReconstructsAsymmetricState) {
   const auto bases = QST::allPauliBases(2);
 
   QST::Config config;
+  config.backend = QST::Backend::Dense;
   config.shotsPerBasis = 4000U;
   config.maxIterations = 300U;
   config.tolerance = 1e-10;
@@ -241,6 +244,91 @@ TEST(QST, ReconstructsAsymmetricState) {
   if (result.rho.p != nullptr) {
     dd.decRef(result.rho);
   }
+  dd.decRef(rhoTrue);
+  dd.garbageCollect();
+}
+
+TEST(QST, QMDDReconstructionStaysOnDecisionDiagrams) {
+  Package dd(1);
+  qc::QuantumComputation circuit(1);
+  auto rhoTrue = QST::densityMatrix(dd, circuit);
+  const auto bases = QST::allPauliBases(1);
+
+  QST::Config config;
+  config.backend = QST::Backend::QMDD;
+  config.shotsPerBasis = 4000U;
+  config.maxIterations = 100U;
+  config.tolerance = 1e-10;
+  config.seed = 13U;
+
+  const auto records =
+      QST::sample(dd, rhoTrue, bases, config.shotsPerBasis, config.seed);
+  auto result = QST::reconstruct(dd, records, bases, config);
+
+  EXPECT_EQ(result.backend, QST::Backend::QMDD);
+  EXPECT_TRUE(result.rhoMatrix.empty());
+  ASSERT_NE(result.rho.p, nullptr);
+  EXPECT_GT(QST::overlap(dd, rhoTrue, result.rho, 1), 0.99);
+  EXPECT_NEAR(QST::purity(dd, result.rho, 1), 1.0, 1e-2);
+  EXPECT_GT(result.observedOutcomes, 0U);
+  EXPECT_GT(result.retainedOutcomes, 0U);
+  EXPECT_GT(result.initialDdSize, 0U);
+  EXPECT_GE(result.peakDdSize, result.initialDdSize);
+  EXPECT_GE(result.peakDdSize, result.ddSize);
+  EXPECT_GT(result.peakRSize, 0U);
+  EXPECT_GE(result.initializationMs, 0.0);
+  EXPECT_GT(result.iterationMs, 0.0);
+  EXPECT_GT(result.elapsedMs, 0.0);
+
+  dd.decRef(result.rho);
+  dd.decRef(rhoTrue);
+  dd.garbageCollect();
+}
+
+TEST(QST, QMDDAndDenseBackendsReconstructTheSameState) {
+  Package dd(2);
+  qc::QuantumComputation circuit(2);
+  circuit.ry(0.4, 0);
+  circuit.cx(0, 1);
+  circuit.ry(0.8, 1);
+  auto rhoTrue = QST::densityMatrix(dd, circuit);
+  const auto bases = QST::allPauliBases(2);
+
+  QST::Config denseConfig;
+  denseConfig.backend = QST::Backend::Dense;
+  denseConfig.shotsPerBasis = 2000U;
+  denseConfig.maxIterations = 40U;
+  denseConfig.tolerance = 1e-10;
+  denseConfig.seed = 17U;
+
+  const auto records = QST::sample(dd, rhoTrue, bases,
+                                   denseConfig.shotsPerBasis, denseConfig.seed);
+  auto denseResult = QST::reconstruct(dd, records, bases, denseConfig);
+  auto qmddConfig = denseConfig;
+  qmddConfig.backend = QST::Backend::QMDD;
+  auto qmddResult = QST::reconstruct(dd, records, bases, qmddConfig);
+
+  EXPECT_EQ(denseResult.backend, QST::Backend::Dense);
+  EXPECT_EQ(qmddResult.backend, QST::Backend::QMDD);
+  EXPECT_GT(denseResult.observedOutcomes, 0U);
+  EXPECT_GT(denseResult.retainedOutcomes, 0U);
+  EXPECT_EQ(denseResult.initialDdSize, 0U);
+  EXPECT_EQ(denseResult.peakDdSize, 0U);
+  ASSERT_FALSE(denseResult.rhoMatrix.empty());
+  ASSERT_NE(qmddResult.rho.p, nullptr);
+  const auto qmddMatrix = qmddResult.rho.getMatrix(2);
+  ASSERT_EQ(qmddMatrix.size(), denseResult.rhoMatrix.size());
+  for (std::size_t row = 0U; row < qmddMatrix.size(); ++row) {
+    ASSERT_EQ(qmddMatrix[row].size(), denseResult.rhoMatrix[row].size());
+    for (std::size_t col = 0U; col < qmddMatrix[row].size(); ++col) {
+      EXPECT_LT(
+          std::abs(qmddMatrix[row][col] - denseResult.rhoMatrix[row][col]),
+          1e-8);
+    }
+  }
+  EXPECT_GT(dd::QST::overlap(dd, rhoTrue, qmddResult.rho, 2), 0.99);
+
+  dd.decRef(qmddResult.rho);
   dd.decRef(rhoTrue);
   dd.garbageCollect();
 }

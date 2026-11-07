@@ -26,17 +26,25 @@
 #   --random-bases K       number of random Pauli bases, 0 selects all 3^n
 #                          (default: 50)
 #   --iterations I         maximum MLE iterations (default: 50)
+#   --max-outcomes K       outcomes kept per basis, 0 keeps all (default: 0)
+#   --backend NAME         qmdd or dense (default: qmdd)
 #   --seed S               sampling seed (default: 42)
 #   --limit N              only run the first N circuits (0 = all)
+#   --full-path            write the full circuit path to the CSV instead of
+#                          the file name
 #   -h, --help             print this help
 #
 # CSV columns:
-#   circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,
-#   elapsed_s,peak_rss_mb,status
+#   circuit,backend,n,bases,shots,iterations,fidelity,purity,time_ms,converged,
+#   dd_size,max_iterations,max_outcomes,true_purity,trace_distance,trace,
+#   trace_error,log_likelihood,observed_outcomes,retained_outcomes,
+#   initial_dd_size,peak_dd_size,peak_r_dd_size,density_ms,basis_ms,sampling_ms,
+#   reconstruct_init_ms,reconstruct_iter_ms,metrics_ms,total_ms,elapsed_s,
+#   peak_rss_mb,status
 #
-# status is one of ok, timeout, memory, error. For every status other than ok
-# the columns n through converged hold "-"; elapsed_s and peak_rss_mb still
-# report what was measured before the abort.
+# status is one of ok, timeout, memory, error. For every status other than ok,
+# probe-derived fields hold "-"; elapsed_s and peak_rss_mb still report what was
+# measured before the abort.
 #
 # Examples:
 #   bash test/run_qst_batch.sh --output out.csv \
@@ -58,8 +66,11 @@ MEMORY_LIMIT_MB=0
 SHOTS=1000
 RANDOM_BASES=50
 ITERATIONS=50
+MAX_OUTCOMES=0
+BACKEND=qmdd
 SEED=42
 LIMIT=0
+FULL_PATH=0
 POLL_INTERVAL=0.2
 INPUT=""
 
@@ -86,17 +97,28 @@ Options:
   --random-bases K       number of random Pauli bases, 0 selects all 3^n
                          (default: 50)
   --iterations I         maximum MLE iterations (default: 50)
+  --max-outcomes K       outcomes kept per basis, 0 keeps all (default: 0)
+  --backend NAME         qmdd or dense (default: qmdd)
   --seed S               sampling seed (default: 42)
   --limit N              only run the first N circuits (0 = all)
+  --full-path            write the full circuit path to the CSV instead of
+                         just the file name
   -h, --help             print this help
 
 CSV columns:
-  circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,
-  elapsed_s,peak_rss_mb,status
+  circuit,backend,n,bases,shots,iterations,fidelity,purity,time_ms,converged,
+  dd_size,max_iterations,max_outcomes,true_purity,trace_distance,trace,
+  trace_error,log_likelihood,observed_outcomes,retained_outcomes,
+  initial_dd_size,peak_dd_size,peak_r_dd_size,density_ms,basis_ms,sampling_ms,
+  reconstruct_init_ms,reconstruct_iter_ms,metrics_ms,total_ms,elapsed_s,
+  peak_rss_mb,status
 
-status is one of ok, timeout, memory, error. For every status other than ok
-the columns n through converged hold "-"; elapsed_s and peak_rss_mb still
-report what was measured before the abort.
+The circuit column holds the file name only, for example adder_n10.qasm.
+Pass --full-path to store the path as it was found instead.
+
+status is one of ok, timeout, memory, error. For every status other than ok,
+probe-derived fields hold "-"; elapsed_s and peak_rss_mb still report what was
+measured before the abort.
 
 Examples:
   bash test/run_qst_batch.sh --output out.csv \
@@ -122,8 +144,11 @@ while [[ $# -gt 0 ]]; do
     --shots) [[ $# -ge 2 ]] || die "--shots needs a value"; SHOTS="$2"; shift 2 ;;
     --random-bases) [[ $# -ge 2 ]] || die "--random-bases needs a value"; RANDOM_BASES="$2"; shift 2 ;;
     --iterations) [[ $# -ge 2 ]] || die "--iterations needs a value"; ITERATIONS="$2"; shift 2 ;;
+    --max-outcomes) [[ $# -ge 2 ]] || die "--max-outcomes needs a value"; MAX_OUTCOMES="$2"; shift 2 ;;
+    --backend) [[ $# -ge 2 ]] || die "--backend needs a value"; BACKEND="$2"; shift 2 ;;
     --seed) [[ $# -ge 2 ]] || die "--seed needs a value"; SEED="$2"; shift 2 ;;
     --limit) [[ $# -ge 2 ]] || die "--limit needs a value"; LIMIT="$2"; shift 2 ;;
+    --full-path) FULL_PATH=1; shift ;;
     -h | --help) usage; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) [[ -z "$INPUT" ]] || die "only one circuit path is allowed"; INPUT="$1"; shift ;;
@@ -136,9 +161,11 @@ done
 [[ "$OUTPUT" != "-" ]] || die "--output must be a path, not -"
 
 for value in "$TIME_LIMIT_SEC" "$MEMORY_LIMIT_MB" "$SHOTS" "$RANDOM_BASES" \
-             "$ITERATIONS" "$SEED" "$LIMIT"; do
+             "$ITERATIONS" "$MAX_OUTCOMES" "$SEED" "$LIMIT"; do
   [[ "$value" =~ ^[0-9]+$ ]] || die "not a non-negative integer: $value"
 done
+[[ "$BACKEND" == "qmdd" || "$BACKEND" == "dense" ]] ||
+  die "backend must be qmdd or dense: $BACKEND"
 
 now_ms() { date +%s%3N; }
 
@@ -176,9 +203,21 @@ collect_circuits() {
 # Run the probe on one circuit and print a single CSV line.
 run_one() {
   local circuit="$1"
+  # The CSV holds the file name only; the progress lines keep the full path.
+  local label
+  if (( FULL_PATH )); then
+    label="$circuit"
+  else
+    label=$(basename -- "$circuit")
+  fi
   local pid rc start_ms elapsed_ms status max_rss_kb rss line
-  local n=- bases=- shots=- iterations=- fidelity=- purity=-
+  local reported_backend=- n=- bases=- shots=- iterations=- fidelity=- purity=-
   local time_ms=- converged=-
+  local -a fields=()
+  local -a details=()
+  for ((i = 0; i < 20; ++i)); do
+    details+=("-")
+  done
 
   TMP_OUT=$(mktemp) || die "cannot create a temporary file"
   TMP_ERR=$(mktemp) || die "cannot create a temporary file"
@@ -191,6 +230,8 @@ run_one() {
       --shots "$SHOTS" \
       --random-bases "$RANDOM_BASES" \
       --iterations "$ITERATIONS" \
+      --max-outcomes "$MAX_OUTCOMES" \
+      --backend "$BACKEND" \
       --seed "$SEED" >"$TMP_OUT" 2>"$TMP_ERR" &
   pid=$!
 
@@ -225,20 +266,31 @@ run_one() {
 
   if [[ "$status" == "ok" ]]; then
     line=$(tail -n 1 "$TMP_OUT")
-    # state,n,bases,shots,iterations,fidelity,purity,dd_size,time_ms,converged
-    IFS=',' read -r _state n bases shots iterations fidelity purity _dd \
-        time_ms converged <<< "$line"
-    if [[ -z "${fidelity:-}" || -z "${converged:-}" ]]; then
+    IFS=',' read -r -a fields <<< "$line"
+    if (( ${#fields[@]} < 30 )); then
       status="error"
-      n=- bases=- shots=- iterations=- fidelity=- purity=-
+      reported_backend=- n=- bases=- shots=- iterations=- fidelity=- purity=-
       time_ms=- converged=-
+    else
+      reported_backend="${fields[1]}"
+      n="${fields[2]}"
+      bases="${fields[3]}"
+      shots="${fields[4]}"
+      iterations="${fields[5]}"
+      fidelity="${fields[6]}"
+      purity="${fields[7]}"
+      time_ms="${fields[9]}"
+      converged="${fields[10]}"
+      details=("${fields[8]}" "${fields[@]:11:19}")
     fi
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-      "$(csv_field "$circuit")" "$n" "$bases" "$shots" "$iterations" \
-      "$fidelity" "$purity" "$time_ms" "$converged" \
-      "$(ms_to_s "$elapsed_ms")" "$(kb_to_mb "$max_rss_kb")" "$status"
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s' "$(csv_field "$label")" \
+      "$reported_backend" "$n" "$bases" "$shots" "$iterations" "$fidelity" \
+      "$purity" "$time_ms" "$converged"
+  printf ',%s' "${details[@]}"
+  printf ',%s,%s,%s\n' "$(ms_to_s "$elapsed_ms")" \
+      "$(kb_to_mb "$max_rss_kb")" "$status"
 
   if [[ "$status" == "error" ]]; then
     printf '      probe stderr: %s' "$(tail -n 1 "$TMP_ERR" 2>/dev/null)" >&2
@@ -264,12 +316,12 @@ if (( LIMIT > 0 && LIMIT < TOTAL )); then
   TOTAL=$LIMIT
 fi
 
-printf 'circuit,n,bases,shots,iterations,fidelity,purity,time_ms,converged,elapsed_s,peak_rss_mb,status\n' \
+printf 'circuit,backend,n,bases,shots,iterations,fidelity,purity,time_ms,converged,dd_size,max_iterations,max_outcomes,true_purity,trace_distance,trace,trace_error,log_likelihood,observed_outcomes,retained_outcomes,initial_dd_size,peak_dd_size,peak_r_dd_size,density_ms,basis_ms,sampling_ms,reconstruct_init_ms,reconstruct_iter_ms,metrics_ms,total_ms,elapsed_s,peak_rss_mb,status\n' \
     >"$OUTPUT"
 
-printf 'probe=%s circuits=%d time-limit=%ss memory-limit=%sMiB shots=%d bases=%s iterations=%d seed=%d\n' \
-    "$PROBE" "$TOTAL" "$TIME_LIMIT_SEC" "$MEMORY_LIMIT_MB" "$SHOTS" \
-    "$RANDOM_BASES" "$ITERATIONS" "$SEED" >&2
+printf 'probe=%s backend=%s circuits=%d time-limit=%ss memory-limit=%sMiB shots=%d bases=%s iterations=%d max-outcomes=%s seed=%d\n' \
+    "$PROBE" "$BACKEND" "$TOTAL" "$TIME_LIMIT_SEC" "$MEMORY_LIMIT_MB" "$SHOTS" \
+    "$RANDOM_BASES" "$ITERATIONS" "$MAX_OUTCOMES" "$SEED" >&2
 
 count_ok=0
 count_timeout=0

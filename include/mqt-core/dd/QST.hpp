@@ -26,10 +26,12 @@ namespace dd {
 class Package;
 
 /**
- * @brief Maximum-likelihood quantum state tomography on density-matrix DDs.
- * @details The density matrix is an n-qubit matrix decision diagram. Every
- * measurement record carries the index of its basis, so records from
- * different bases never mix. The reconstruction is the dilute MLE iteration
+ * @brief Maximum-likelihood quantum state tomography on matrix decision
+ * diagrams.
+ * @details The QMDD backend keeps the density matrix as an n-qubit matrix
+ * decision diagram. Every measurement record carries the index of its basis,
+ * so records from different bases never mix. The reconstruction is the dilute
+ * MLE iteration
  *
  *     R = sum_{b,k} (f_{b,k} / p_{b,k}) Pi_{b,k}
  *     rho <- R rho R / Tr(R rho R)
@@ -39,6 +41,9 @@ class Package;
  */
 class QST {
 public:
+  /// Reconstruction backend.
+  enum class Backend : std::uint8_t { QMDD = 0, Dense = 1 };
+
   /// A single-qubit Pauli measurement basis.
   enum class Basis : std::uint8_t { Z = 0, X = 1, Y = 2 };
 
@@ -63,6 +68,9 @@ public:
 
   /// Configuration of the sampling and the reconstruction.
   struct Config {
+    /// Reconstruction backend. QMDD keeps the density matrix and MLE state in
+    /// matrix DDs. Dense materializes full matrices and serves as a baseline.
+    Backend backend = Backend::QMDD;
     /// Number of shots per measurement basis.
     std::size_t shotsPerBasis = 1000U;
     /// Maximum number of MLE iterations.
@@ -71,18 +79,44 @@ public:
     double tolerance = 1e-8;
     /// Number of random bases; 0 selects the full 3^n Pauli basis.
     std::size_t randomBases = 0U;
+    /// Maximum number of observed outcomes kept per basis. Zero keeps all
+    /// observed outcomes.
+    std::size_t maxOutcomesPerBasis = 0U;
     /// Seed for sampling and random bases.
     std::size_t seed = 42U;
   };
 
   /// Result of a reconstruction.
   struct Result {
+    /// Backend that produced the result.
+    Backend backend = Backend::QMDD;
+    /// Reconstructed density matrix for the QMDD backend.
     mEdge rho{};
+    /// Reconstructed density matrix for the dense backend.
     CMat rhoMatrix;
+    /// Log-likelihood of the retained measurement outcomes.
     double logLikelihood = 0.0;
+    /// Number of completed MLE iterations.
     std::size_t iterations = 0U;
+    /// Whether the log-likelihood converged.
     bool converged = false;
+    /// Number of observed measurement outcomes supplied to the reconstruction.
+    std::size_t observedOutcomes = 0U;
+    /// Number of measurement outcomes retained by the backend.
+    std::size_t retainedOutcomes = 0U;
+    /// Number of nodes in the initial QMDD.
+    std::size_t initialDdSize = 0U;
+    /// Number of nodes in the final QMDD.
     std::size_t ddSize = 0U;
+    /// Largest number of nodes in the QMDD density matrix during MLE.
+    std::size_t peakDdSize = 0U;
+    /// Largest number of nodes in a QMDD R matrix during MLE.
+    std::size_t peakRSize = 0U;
+    /// Time spent constructing the initial state in milliseconds.
+    double initializationMs = 0.0;
+    /// Time spent running MLE iterations in milliseconds.
+    double iterationMs = 0.0;
+    /// Reconstruction time in milliseconds.
     double elapsedMs = 0.0;
   };
 
@@ -154,6 +188,12 @@ public:
                                                  std::size_t nQubits);
 
 private:
+  /// Run the dilute MLE entirely on matrix DDs.
+  [[nodiscard]] static Result
+  reconstructQMDD(Package& dd, const std::vector<MeasurementRecord>& records,
+                  const std::vector<MeasurementBasis>& bases,
+                  const Config& config);
+
   /// Build the projector of one qubit and embed it into the full space.
   [[nodiscard]] static mEdge singleQubitProjector(Package& dd,
                                                   std::size_t qubit,
@@ -162,6 +202,10 @@ private:
   /// Return the single-qubit basis-change matrix for one measurement basis.
   [[nodiscard]] static mEdge basisChange(Package& dd, std::size_t qubit,
                                          Basis basis);
+
+  /// Return the full tensor-product basis-change matrix for one setting.
+  [[nodiscard]] static mEdge basisChange(Package& dd, std::size_t nQubits,
+                                         const MeasurementBasis& basis);
 
   /// Return the outcome probabilities of all 2^n results in one basis.
   [[nodiscard]] static std::vector<double>
